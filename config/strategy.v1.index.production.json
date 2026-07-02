@@ -1,0 +1,103 @@
+{
+  "poll_seconds": 20,
+  "history_lookback_days": 30,
+  "default_interval": "5minute",
+  "min_candles_for_analysis": 60,
+  "capital": 500000,
+  "risk": {
+    "risk_per_trade_pct": 0.6,
+    "max_open_positions": 2,
+    "max_daily_loss": 10000,
+    "reward_to_risk": 2.0,
+    "sl_atr_multiplier": 1.5,
+    "max_trade_value": 90000,
+    "max_premium_per_trade": 90000,
+    "max_exposure_per_underlying": 120000,
+    "max_spread_pct": 1.2,
+    "max_slippage_pct": 0.35,
+    "option_sl_pct": 22.0,
+    "option_target_pct": 45.0,
+    "max_portfolio_drawdown_pct": 8.0,
+    "var_confidence_level": 0.95,
+    "min_history_for_var": 50,
+    "max_var_pct": 2.0
+  },
+  "contract_selection": {
+    "expiry_type": "weekly",
+    "min_dte": 1,
+    "max_dte": 7,
+    "strike_mode": "ATM",
+    "strike_offset_steps": 0,
+    "min_oi": 20000,
+    "min_volume": 3000,
+    "max_spread_pct": 1.2,
+    "ce_pe_decision_rule": "signal"
+  },
+  "session_rules": {
+    "timezone": "Asia/Kolkata",
+    "trading_start": "09:20",
+    "trading_end": "15:20",
+    "no_new_trade_after": "15:05",
+    "expiry_day_behavior": "no_new_trades",
+    "event_blackout_windows": [
+      {
+        "start": "09:15",
+        "end": "09:25",
+        "label": "open-volatility-cooldown"
+      }
+    ]
+  },
+  "watchlist": [
+    {
+      "symbol": "NIFTY",
+      "exchange": "NSE",
+      "contract_exchange": "NFO",
+      "instrument_type": "index_option",
+      "interval": "5minute",
+      "option_side": "auto",
+      "option_type": "call",
+      "option_expiry_hint": "",
+      "option_days_to_expiry": 7,
+      "option_iv_min": 0.08,
+      "option_iv_max": 1.2,
+      "option_delta_min": 0.25,
+      "option_delta_max": 0.65,
+      "risk_free_rate": 0.07,
+      "enabled": true
+    },
+    {
+      "symbol": "BANKNIFTY",
+      "exchange": "NSE",
+      "contract_exchange": "NFO",
+      "instrument_type": "index_option",
+      "interval": "5minute",
+      "option_side": "auto",
+      "option_type": "call",
+      "option_expiry_hint": "",
+      "option_days_to_expiry": 7,
+      "option_iv_min": 0.1,
+      "option_iv_max": 1.4,
+      "option_delta_min": 0.25,
+      "option_delta_max": 0.65,
+      "risk_free_rate": 0.07,
+      "enabled": true
+    },
+    {
+      "symbol": "SENSEX",
+      "exchange": "BSE",
+      "contract_exchange": "BFO",
+      "instrument_type": "index_option",
+      "interval": "5minute",
+      "option_side": "auto",
+      "option_type": "call",
+      "option_expiry_hint": "",
+      "option_days_to_expiry": 7,
+      "option_iv_min": 0.08,
+      "option_iv_max": 1.2,
+      "option_delta_min": 0.25,
+      "option_delta_max": 0.65,
+      "risk_free_rate": 0.07,
+      "enabled": true
+    }
+  ]
+}
