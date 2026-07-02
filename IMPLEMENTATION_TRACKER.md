@@ -71,6 +71,7 @@ Status legend:
 | T48 | Resume paper entries with a 10% portfolio drawdown ceiling | DONE | T47 | Preserve paper account history while raising `max_portfolio_drawdown_pct` from 8% to 10%, allowing entries below the new ceiling while all daily, strategy, exposure, and position gates remain active |
 | T49 | Make the portfolio drawdown gate optional | DONE | T48 | A configured `max_portfolio_drawdown_pct` of `0` disables cumulative drawdown entry blocking while retaining daily-loss, stop-loss, exposure, and position controls |
 | T50 | Add safe sharing package workflow | DONE | T49 | A repeatable package command creates a clean zip that preserves strategy/config code while excluding local credentials, tokens, paper state, logs, archived logs, and candle cache data |
+| T51 | Publish share-safe OptionTrader snapshot to GitHub | DONE | T50 | Initialized the local Git repository, committed only share-safe tracked files, configured GitHub remote, and pushed `main` to `skshanawaz21-crypto/OptionTrade-Algo` |
 
 ## Change Log
 
@@ -121,6 +122,7 @@ Status legend:
 | 2026-06-12 | T48 completed: raised the paper portfolio drawdown ceiling from 8% to 10% at the user's explicit request, preserving all state and retaining the remaining risk controls. |
 | 2026-06-12 | T49 completed: disabled the cumulative portfolio drawdown entry gate at the user's explicit request by defining `0%` as disabled; daily and trade-level safeguards remain active. |
 | 2026-07-02 | T50 completed: added `tools/prepare_share_package.py`, share-safe ignore rules, and `SHARING.md` so OptionTrader can be shared without exposing local credentials, tokens, paper state, logs, or cached market data. |
+| 2026-07-02 | T51 completed: initialized Git for OptionTrader, committed the share-safe project snapshot, configured the GitHub remote, and pushed `main` to `skshanawaz21-crypto/OptionTrade-Algo`. |
 
 ## Working Rules
 
