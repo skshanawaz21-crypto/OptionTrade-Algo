@@ -26,7 +26,8 @@ call or put option contracts from an underlying-based signal.
 
 - `main.py`: CLI entry point
 - `run_dashboard.py`: local dashboard entry point
-- `config/strategy.example.json`: sample options-first strategy file
+- `config/strategy.v1.nifty250_scanner_options.json`: default dashboard strategy config
+- `config/strategy.example.json`: smaller sample options-first strategy file
 - `algotrader/config.py`: settings and strategy config loader
 - `algotrader/brokers/zerodha.py`: Zerodha broker and option contract discovery
 - `algotrader/brokers/fyers.py`: optional FYERS market-data fallback for paper quotes
@@ -37,18 +38,99 @@ call or put option contracts from an underlying-based signal.
 - `algotrader/risk.py`: risk checks and lot-based sizing
 - `algotrader/dashboard.py`: browser dashboard
 
-## Setup
+## Quick Start From GitHub
 
-1. Create and activate a virtual environment.
-2. Install dependencies:
+Requirements:
 
-```bash
-pip install -r requirements.txt
+- Python 3.11 or newer
+- Git
+- VS Code with the Microsoft Python extension, if you want to run from VS Code
+- Your own Zerodha Kite Connect API key and secret
+
+Clone the repository:
+
+```powershell
+git clone https://github.com/skshanawaz21-crypto/OptionTrade-Algo.git
+cd OptionTrade-Algo
 ```
 
-3. Copy `.env.example` to `.env` and fill in your Zerodha values.
-4. Keep `access_token.txt` in the project root, or point `ZERODHA_TOKEN_FILE` to your token file.
-5. Start with the sample config in `config/strategy.example.json`.
+Create the virtual environment and install dependencies:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Create your local environment file:
+
+```powershell
+copy .env.example .env
+```
+
+Edit `.env` and enter your own Zerodha values:
+
+```text
+ZERODHA_API_KEY=your_api_key
+ZERODHA_API_SECRET=your_api_secret
+ZERODHA_ACCESS_TOKEN=
+ZERODHA_TOKEN_FILE=access_token.txt
+```
+
+Do not copy another user's `.env`, `access_token.txt`, paper state, or logs.
+
+## Run From VS Code
+
+Yes, the downloaded repo can run from VS Code.
+
+1. Open VS Code.
+2. Open the cloned `OptionTrade-Algo` folder.
+3. Open the integrated terminal.
+4. Run the setup commands from `Quick Start From GitHub`.
+5. Select the interpreter: `Ctrl+Shift+P` -> `Python: Select Interpreter` -> `.venv\Scripts\python.exe`.
+6. Go to `Run and Debug`.
+7. Choose `OptionTrader Dashboard (paper)`.
+8. Start debugging, or press `F5`.
+
+The dashboard must always be opened at:
+
+```text
+http://127.0.0.1:8877/
+```
+
+The dashboard starts the paper engine by default with:
+
+```text
+config/strategy.v1.nifty250_scanner_options.json
+```
+
+The top-right Zerodha token control will show whether a token is active. If setup is needed, open the login URL shown by the dashboard, login with your own Zerodha account, then paste the redirected URL or request token back into the dashboard.
+
+## Run From Terminal
+
+Dashboard:
+
+```powershell
+.\.venv\Scripts\python.exe run_dashboard.py
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8877/
+```
+
+One engine cycle in paper mode:
+
+```powershell
+.\.venv\Scripts\python.exe main.py --config config\strategy.v1.nifty250_scanner_options.json --mode paper --once
+```
+
+Continuous paper mode without the dashboard:
+
+```powershell
+.\.venv\Scripts\python.exe main.py --config config\strategy.v1.nifty250_scanner_options.json --mode paper
+```
 
 ## Optional FYERS Market Data Fallback
 
@@ -81,28 +163,6 @@ OptionTrader still uses Zerodha-first contract discovery and live execution.
 FYERS is currently wired as a paper-mode market-data fallback, not as the live
 order execution broker.
 
-## Run
-
-One cycle in paper mode:
-
-```bash
-python main.py --config config/strategy.example.json --mode paper --once
-```
-
-Continuous paper mode:
-
-```bash
-python main.py --config config/strategy.example.json --mode paper
-```
-
-Dashboard:
-
-```bash
-python run_dashboard.py
-```
-
-Then open `http://127.0.0.1:8877`.
-
 ## Runtime Data
 
 - `data/paper_state.json`: persisted paper option trades
@@ -110,9 +170,9 @@ Then open `http://127.0.0.1:8877`.
 - `logs.txt`: current engine log
 - `data/log_archive/`: archived log sessions
 
-For a fresh options-only start after copying the old project, it is best to
-clear `paper_state.json`, `logs.txt`, and stale candle files from unrelated
-equity symbols before running the engine.
+A fresh GitHub clone does not include another user's paper state, token files,
+logs, or candle cache. These files are generated locally on the new user's
+machine.
 
 ## Sharing With Another User
 
