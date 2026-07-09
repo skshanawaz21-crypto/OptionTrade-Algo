@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
@@ -134,6 +134,44 @@ def _extract_request_token(raw_input: str) -> str:
     if not token:
         raise ValueError("Could not extract request_token from the pasted URL.")
     return token
+
+
+def _env_truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _csv_values(value: str | None) -> list[str]:
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
+def _host_is_local(host: str) -> bool:
+    normalized = host.strip().lower()
+    if normalized.startswith("[::1]"):
+        return True
+    hostname = normalized.split(":", 1)[0]
+    return hostname in {"127.0.0.1", "localhost"}
+
+
+def _cloud_access_auth_error(headers: Mapping[str, str]) -> str | None:
+    if not _env_truthy(os.getenv("OPTIONTRADER_CLOUD_ACCESS_REQUIRED")):
+        return None
+
+    host = headers.get("Host", "")
+    if _env_truthy(os.getenv("OPTIONTRADER_CLOUD_LOCAL_BYPASS", "1")) and _host_is_local(host):
+        return None
+
+    email = headers.get("Cf-Access-Authenticated-User-Email", "").strip().lower()
+    if not email:
+        return "Cloudflare Access login is required for this OptionTrader endpoint."
+
+    allowed_emails = {
+        item.lower()
+        for item in _csv_values(os.getenv("OPTIONTRADER_CLOUD_ALLOWED_EMAILS"))
+    }
+    if allowed_emails and email not in allowed_emails:
+        return "This Cloudflare Access user is not allowed to use OptionTrader."
+
+    return None
 
 
 @dataclass
@@ -4301,6 +4339,8 @@ HTML_PAGE = """<!doctype html>
 
 class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
+        if self._cloud_access_blocked():
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/":
             html = HTML_PAGE.replace("__CONFIG_PATH__", str(DEFAULT_CONFIG))
@@ -4492,6 +4532,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def do_POST(self) -> None:
+        if self._cloud_access_blocked():
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/api/start":
             payload = self._read_json_body()
@@ -4609,6 +4651,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.wfile.write(encoded)
         except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError, OSError):
             return
+
+    def _cloud_access_blocked(self) -> bool:
+        message = _cloud_access_auth_error(self.headers)
+        if not message:
+            return False
+        self._respond_error(HTTPStatus.UNAUTHORIZED, message)
+        return True
 
 
 def main() -> int:

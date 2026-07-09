@@ -1,0 +1,7 @@
+tunnel: YOUR_OPTIONTRADER_TUNNEL_ID
+credentials-file: C:\Users\YOUR_WINDOWS_USER\.cloudflared\YOUR_OPTIONTRADER_TUNNEL_ID.json
+
+ingress:
+  - hostname: paper.yourdomain.com
+    service: http://127.0.0.1:8877
+  - service: http_status:404

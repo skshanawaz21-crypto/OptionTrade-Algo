@@ -12,6 +12,9 @@ top-level status files.
 
 ## Current Docs
 
+- `cloud-paper-platform-blueprint.md`: Phase 1 multi-user cloud paper trading architecture, data-source decision, hosting plan, database blueprint, and rollout roadmap
+- `cloud-paper-platform-ui-spec.md`: Figma-ready UI specification, user flows, wireframes, component library, and data contracts for the cloud paper app
+- `self-hosted-private-beta-runbook.md`: self-hosted Phase 1A runbook for Cloudflare Tunnel/Access, the always-on OptionTrader machine, and protected browser access
 - `strategy-spec.md`: working template for the actual trading strategy
 
 ## Relationship To Top-Level Files

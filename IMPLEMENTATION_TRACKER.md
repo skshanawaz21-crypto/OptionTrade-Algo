@@ -73,6 +73,11 @@ Status legend:
 | T50 | Add safe sharing package workflow | DONE | T49 | A repeatable package command creates a clean zip that preserves strategy/config code while excluding local credentials, tokens, paper state, logs, archived logs, and candle cache data |
 | T51 | Publish share-safe OptionTrader snapshot to GitHub | DONE | T50 | Initialized the local Git repository, committed only share-safe tracked files, configured GitHub remote, and pushed `main` to `skshanawaz21-crypto/OptionTrade-Algo` |
 | T52 | Document GitHub clone and VS Code startup workflow | DONE | T51 | README now gives clone/setup/run instructions for new users and the repo includes VS Code launch/settings files for dashboard and unittest execution |
+| T53 | Add Desktop launcher shortcut for OptionTrader dashboard | DONE | T52 | Added a PowerShell launcher that starts only `C:\OptionTrader`, waits for dashboard readiness, opens `http://127.0.0.1:8877/`, and created a Desktop shortcut to run it |
+| T54 | Create cloud paper platform blueprint and UI spec | DONE | T53 | Added durable Phase 1 cloud paper trading architecture and Figma-ready UI planning docs covering hosting, market data constraints, multi-user database design, strategy rollout, and user/admin screens |
+| T55 | Add self-hosted private-beta cloud path | DONE | T54 | Extended the cloud paper blueprint with an always-on-machine Phase 1A path using Cloudflare Tunnel/Access, local PostgreSQL/Redis, central market-data cache guidance, 5-20 user capacity expectations, and data-licensing cautions |
+| T56 | Add self-hosted beta launcher and Cloudflare Access guard | DONE | T55 | Added an optional dashboard Cloudflare Access header guard, tests, a self-hosted launcher, a separate OptionTrader Cloudflare config generator/template, and a runbook without modifying `C:\AlgoTrader` |
+| T57 | Generate local OptionTrader Cloudflare tunnel config | DONE | T56 | Created `%USERPROFILE%\.cloudflared\optiontrader.yml` for the existing Cloudflare tunnel/hostname to route to OptionTrader port `8877`, leaving the original AlgoTrader config on port `8765` unchanged |
 
 ## Change Log
 
@@ -125,6 +130,11 @@ Status legend:
 | 2026-07-02 | T50 completed: added `tools/prepare_share_package.py`, share-safe ignore rules, and `SHARING.md` so OptionTrader can be shared without exposing local credentials, tokens, paper state, logs, or cached market data. |
 | 2026-07-02 | T51 completed: initialized Git for OptionTrader, committed the share-safe project snapshot, configured the GitHub remote, and pushed `main` to `skshanawaz21-crypto/OptionTrade-Algo`. |
 | 2026-07-02 | T52 completed: expanded README with GitHub clone, Zerodha setup, fixed dashboard URL, terminal run, and VS Code run/debug instructions; added VS Code launch/settings files. |
+| 2026-07-06 | T53 completed: added a local PowerShell launcher and Desktop shortcut for starting the OptionTrader dashboard and opening `http://127.0.0.1:8877/`. |
+| 2026-07-09 | T54 completed: added Phase 1 cloud paper platform blueprint and UI spec docs, including cPanel/Cloudflare/VPS deployment guidance, market-data licensing constraints, database schema, strategy rollout model, and Figma-ready screen plans. |
+| 2026-07-09 | T55 completed: added the self-hosted private-beta path to the cloud paper blueprint, covering Cloudflare Tunnel/Access routing, local database/cache services, 5-20 user assumptions, and the distinction between API-limit caching and market-data redistribution rights. |
+| 2026-07-09 | T56 completed: implemented the first self-hosted beta foundation with optional Cloudflare Access enforcement, PowerShell startup/config scripts, a separate OptionTrader tunnel template, runbook docs, and guard regression tests. |
+| 2026-07-09 | T57 completed: generated the local OptionTrader-specific Cloudflare tunnel config under the Windows user profile and validated that it routes the existing hostname to `http://127.0.0.1:8877` without changing the original AlgoTrader tunnel config. |
 
 ## Working Rules
 
