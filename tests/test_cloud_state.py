@@ -127,6 +127,43 @@ class CloudStateStoreTests(unittest.TestCase):
             self.assertEqual(cached["last_price"], 24000.5)
             self.assertEqual(cached["payload"]["last_price"], 24000.5)
 
+    def test_explicit_user_contexts_have_separate_strategy_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = CloudStateStore(Path(tmp) / "optiontrader.db")
+            owner = store.ensure_user_context(
+                email="owner@example.com",
+                display_name="Owner",
+                account_name="Default Paper Account",
+                capital=500000,
+                role="admin",
+            )
+            friend = store.ensure_user_context(
+                email="friend@example.com",
+                display_name="Friend",
+                account_name="Default Paper Account",
+                capital=250000,
+                role="user",
+            )
+            store.seed_default_strategies(scanner_enabled=True, index_scanner_enabled=True)
+            store.ensure_default_strategy_settings(owner)
+            store.ensure_default_strategy_settings(friend)
+
+            store.set_strategy_enabled(friend, "index_options_scanner", False)
+
+            owner_settings = {
+                row["strategy_slug"]: row["enabled"]
+                for row in store.list_strategy_settings(owner)
+            }
+            friend_settings = {
+                row["strategy_slug"]: row["enabled"]
+                for row in store.list_strategy_settings(friend)
+            }
+
+            self.assertNotEqual(owner.user_id, friend.user_id)
+            self.assertNotEqual(owner.paper_account_id, friend.paper_account_id)
+            self.assertTrue(owner_settings["index_options_scanner"])
+            self.assertFalse(friend_settings["index_options_scanner"])
+
 
 if __name__ == "__main__":
     unittest.main()

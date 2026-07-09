@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest.mock import patch
 
-from algotrader.dashboard import _cloud_access_auth_error
+from algotrader.dashboard import _cloud_access_auth_error, _request_cloud_identity
 
 
 class CloudAccessGuardTests(unittest.TestCase):
@@ -67,6 +67,29 @@ class CloudAccessGuardTests(unittest.TestCase):
                     }
                 )
             )
+
+    def test_request_identity_uses_cloudflare_email_when_present(self):
+        identity = _request_cloud_identity(
+            {
+                "Host": "paper.example.com",
+                "Cf-Access-Authenticated-User-Email": "Friend.User@example.com",
+            }
+        )
+
+        self.assertEqual(identity["email"], "friend.user@example.com")
+        self.assertEqual(identity["display_name"], "Friend User")
+        self.assertEqual(identity["source"], "cloudflare_access")
+
+    def test_request_identity_falls_back_to_default_owner(self):
+        with patch.dict(
+            os.environ,
+            {"OPTIONTRADER_DEFAULT_USER_EMAIL": "owner@example.com"},
+            clear=True,
+        ):
+            identity = _request_cloud_identity({"Host": "127.0.0.1:8877"})
+
+        self.assertEqual(identity["email"], "owner@example.com")
+        self.assertEqual(identity["source"], "local_owner")
 
 
 if __name__ == "__main__":

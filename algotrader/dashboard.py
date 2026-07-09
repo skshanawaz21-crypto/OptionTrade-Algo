@@ -23,7 +23,14 @@ import yfinance as yf
 from algotrader.config import AppSettings, WatchItem
 from algotrader.brokers.factory import create_broker
 from algotrader.brokers.fyers import FyersBroker
-from algotrader.cloud_state import CloudStateStore, PaperContext
+from algotrader.cloud_state import (
+    DEFAULT_ACCOUNT_NAME,
+    DEFAULT_USER_EMAIL,
+    CloudStateStore,
+    PaperContext,
+    display_name_from_email,
+    normalize_email,
+)
 from algotrader.marketdata import completed_intraday_candles
 from algotrader.nifty250_strategy import (
     POPULAR_NSE_SYMBOLS,
@@ -175,6 +182,29 @@ def _cloud_access_auth_error(headers: Mapping[str, str]) -> str | None:
     return None
 
 
+def _default_cloud_identity() -> dict[str, str]:
+    email = normalize_email(os.getenv("OPTIONTRADER_DEFAULT_USER_EMAIL", DEFAULT_USER_EMAIL))
+    display_name = os.getenv("OPTIONTRADER_DEFAULT_USER_NAME", "Local Owner").strip() or "Local Owner"
+    return {
+        "email": email,
+        "display_name": display_name,
+        "source": "local_owner",
+    }
+
+
+def _request_cloud_identity(headers: Mapping[str, str] | None) -> dict[str, str]:
+    if headers is None:
+        return _default_cloud_identity()
+    email = normalize_email(headers.get("Cf-Access-Authenticated-User-Email", ""))
+    if email:
+        return {
+            "email": email,
+            "display_name": display_name_from_email(email),
+            "source": "cloudflare_access",
+        }
+    return _default_cloud_identity()
+
+
 @dataclass
 class EngineState:
     process: subprocess.Popen[str] | None = None
@@ -198,7 +228,7 @@ class EngineSupervisor:
         self._index_tick_cache: tuple[datetime, list[dict[str, Any]]] | None = None
         self._index_scanner_cache: tuple[datetime, list[dict[str, Any]]] | None = None
         self._cloud_state = CloudStateStore.from_env()
-        self._cloud_context_cache: PaperContext | None = None
+        self._cloud_context_cache: dict[str, PaperContext] = {}
 
     def start(self, config_path: str | None = None, mode: str = "paper") -> dict[str, Any]:
         with self._lock:
@@ -282,9 +312,11 @@ class EngineSupervisor:
             "log_path": str(self.state.log_path),
         }
 
-    def _cloud_context(self) -> PaperContext:
-        if self._cloud_context_cache is not None:
-            return self._cloud_context_cache
+    def _cloud_context(self, headers: Mapping[str, str] | None = None) -> PaperContext:
+        identity = _request_cloud_identity(headers)
+        email = normalize_email(identity["email"])
+        if email in self._cloud_context_cache:
+            return self._cloud_context_cache[email]
         raw_config: dict[str, Any] = {}
         config_path = self.state.config_path if self.state.config_path.exists() else DEFAULT_CONFIG
         if config_path.exists():
@@ -293,23 +325,46 @@ class EngineSupervisor:
             except json.JSONDecodeError:
                 raw_config = {}
         risk = raw_config.get("risk", {}) if isinstance(raw_config.get("risk"), dict) else {}
-        context = self._cloud_state.ensure_default_context(
+        default_email = normalize_email(os.getenv("OPTIONTRADER_DEFAULT_USER_EMAIL", DEFAULT_USER_EMAIL))
+        context = self._cloud_state.ensure_user_context(
+            email=email,
+            display_name=identity.get("display_name") or display_name_from_email(email),
+            account_name=os.getenv("OPTIONTRADER_DEFAULT_ACCOUNT_NAME", DEFAULT_ACCOUNT_NAME).strip()
+            or DEFAULT_ACCOUNT_NAME,
             capital=float(raw_config.get("capital", AppSettings.from_env().capital) or 0.0),
             max_daily_loss=float(risk.get("max_daily_loss", 0.0) or 0.0),
             max_open_positions=int(risk.get("max_open_positions", 0) or 0),
+            role="admin" if email == default_email else "user",
         )
         self._cloud_state.seed_default_strategies(
             scanner_enabled=bool((raw_config.get("scanner_2m_nifty250") or {}).get("enabled", False)),
             index_scanner_enabled=bool((raw_config.get("index_options_scanner") or {}).get("enabled", False)),
         )
         self._cloud_state.ensure_default_strategy_settings(context)
-        self._cloud_context_cache = context
+        self._cloud_context_cache[email] = context
         return context
 
-    def cloud_paper_summary(self) -> dict[str, Any]:
+    def _is_owner_context(self, context: PaperContext, headers: Mapping[str, str] | None = None) -> bool:
+        identity = _request_cloud_identity(headers)
+        if identity.get("source") == "local_owner":
+            return True
+        default_email = normalize_email(os.getenv("OPTIONTRADER_DEFAULT_USER_EMAIL", DEFAULT_USER_EMAIL))
+        return normalize_email(context.user_email) == default_email
+
+    def is_owner_request(self, headers: Mapping[str, str] | None = None) -> bool:
         try:
-            context = self._cloud_context()
-            return self._cloud_state.summary(context)
+            return self._is_owner_context(self._cloud_context(headers), headers)
+        except Exception:
+            return False
+
+    def cloud_paper_summary(self, headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+        try:
+            context = self._cloud_context(headers)
+            summary = self._cloud_state.summary(context)
+            summary["request_user_source"] = _request_cloud_identity(headers).get("source", "unknown")
+            summary["owner_scope"] = self._is_owner_context(context, headers)
+            summary["engine_scope"] = "local_owner_worker" if summary["owner_scope"] else "viewer_account_pending_worker"
+            return summary
         except Exception as exc:
             return {
                 "db_path": str(self._cloud_state.path),
@@ -317,31 +372,170 @@ class EngineSupervisor:
                 "message": str(exc),
             }
 
-    def cloud_strategy_settings(self) -> list[dict[str, Any]]:
+    def cloud_strategy_settings(self, headers: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
         try:
-            return self._cloud_state.list_strategy_settings(self._cloud_context())
+            return self._cloud_state.list_strategy_settings(self._cloud_context(headers))
         except Exception:
             return []
 
-    def set_cloud_strategy_enabled(self, strategy_slug: str, enabled: bool) -> dict[str, Any]:
+    def set_cloud_strategy_enabled(
+        self,
+        strategy_slug: str,
+        enabled: bool,
+        headers: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
         normalized = strategy_slug.strip().lower()
         if not normalized:
             raise RuntimeError("strategy_slug is required.")
         try:
-            context = self._cloud_context()
+            context = self._cloud_context(headers)
             self._cloud_state.set_strategy_enabled(context, normalized, enabled)
             return {
                 "ok": True,
                 "strategy_slug": normalized,
                 "enabled": enabled,
-                "strategy_settings": self.cloud_strategy_settings(),
+                "strategy_settings": self.cloud_strategy_settings(headers),
             }
         except KeyError as exc:
             raise RuntimeError(str(exc)) from exc
 
-    def mirror_json_state_to_cloud_db(self) -> dict[str, Any]:
-        context = self._cloud_context()
+    def mirror_json_state_to_cloud_db(self, headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+        context = self._cloud_context(headers)
+        if not self._is_owner_context(context, headers):
+            raise RuntimeError("JSON state migration is restricted to the owner account.")
         return self._cloud_state.migrate_json_state(context, DEFAULT_STATE)
+
+    def _cloud_payload(self, context: PaperContext) -> dict[str, Any]:
+        payload = self._cloud_state.load_paper_state(context)
+        if isinstance(payload, dict):
+            return payload
+        return {
+            "saved_at": None,
+            "account": {},
+            "open_trades": [],
+            "closed_trades": [],
+        }
+
+    def _cloud_active_paper_trades(self, context: PaperContext) -> list[dict[str, Any]]:
+        payload = self._cloud_payload(context)
+        trades: list[dict[str, Any]] = []
+        for trade in list(payload.get("open_trades", []) or []):
+            trade_copy = dict(trade)
+            entry_price = float(trade_copy.get("entry_price", 0.0) or 0.0)
+            current_price = self._to_float(trade_copy.get("current_price"))
+            quantity = int(trade_copy.get("quantity", 0) or 0)
+            direction = str(trade_copy.get("direction", "BUY") or "BUY").upper()
+            unrealized_pnl = None
+            if current_price is not None:
+                unrealized_pnl = (
+                    (current_price - entry_price) * quantity
+                    if direction == "BUY"
+                    else (entry_price - current_price) * quantity
+                )
+            trade_copy["current_price"] = current_price
+            trade_copy["unrealized_pnl"] = unrealized_pnl
+            trade_copy["quote_status"] = "db_state"
+            trade_copy["position_value"] = abs(entry_price * quantity)
+            trade_copy["opened_at"] = _format_ist(trade.get("opened_at"))
+            trade_copy["underlying_quote"] = None
+            trades.append(trade_copy)
+        return trades
+
+    def _cloud_completed_paper_trades(self, context: PaperContext) -> list[dict[str, Any]]:
+        payload = self._cloud_payload(context)
+        trades: list[dict[str, Any]] = []
+        for trade in list(payload.get("closed_trades", []) or [])[-20:][::-1]:
+            trade_copy = dict(trade)
+            trade_copy["opened_at"] = _format_ist(trade.get("opened_at"))
+            trade_copy["closed_at"] = _format_ist(trade.get("closed_at"))
+            trades.append(trade_copy)
+        return trades
+
+    def _cloud_paper_account_summary(
+        self,
+        context: PaperContext,
+        active_trades: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        payload = self._cloud_payload(context)
+        account = payload.get("account", {}) if isinstance(payload.get("account"), dict) else {}
+        db_summary = self._cloud_state.summary(context)
+        db_account = db_summary.get("paper_account") or {}
+        active_trades = active_trades if active_trades is not None else self._cloud_active_paper_trades(context)
+
+        starting_capital = float(
+            account.get("starting_capital")
+            or db_account.get("starting_capital")
+            or 0.0
+        )
+        realized_pnl = float(account.get("realized_pnl") or db_account.get("realized_pnl") or 0.0)
+        capital_committed = float(
+            account.get(
+                "capital_committed",
+                sum(float(trade.get("position_value", 0.0) or 0.0) for trade in active_trades),
+            )
+            or 0.0
+        )
+        unrealized_pnl = sum(float(trade.get("unrealized_pnl") or 0.0) for trade in active_trades)
+        available_balance = float(
+            account.get("available_balance")
+            or db_account.get("current_cash")
+            or (starting_capital + realized_pnl - capital_committed)
+            or 0.0
+        )
+        return {
+            "starting_capital": starting_capital,
+            "realized_pnl": realized_pnl,
+            "available_balance": available_balance,
+            "capital_committed": capital_committed,
+            "unrealized_pnl": unrealized_pnl,
+            "equity": starting_capital + realized_pnl + unrealized_pnl,
+            "open_positions": len(active_trades),
+        }
+
+    def _cloud_signal_quality_summary(self, context: PaperContext) -> dict[str, Any]:
+        payload = self._cloud_payload(context)
+        trades = list(payload.get("closed_trades", []) or [])
+        if not trades:
+            return {
+                "period": "all",
+                "total_trades": 0,
+                "wins": 0,
+                "losses": 0,
+                "win_rate_pct": 0.0,
+                "avg_net_pnl": 0.0,
+                "profit_factor": 0.0,
+            }
+        pnls = [float(trade.get("pnl", 0.0) or 0.0) for trade in trades]
+        wins = [pnl for pnl in pnls if pnl > 0]
+        losses = [pnl for pnl in pnls if pnl < 0]
+        total_profit = sum(wins)
+        total_loss = abs(sum(losses))
+        return {
+            "period": "all",
+            "total_trades": len(trades),
+            "wins": len(wins),
+            "losses": len(losses),
+            "win_rate_pct": round((len(wins) / len(trades)) * 100.0, 2),
+            "avg_net_pnl": round(sum(pnls) / len(trades), 2),
+            "profit_factor": round(total_profit / total_loss, 2) if total_loss else 0.0,
+        }
+
+    def cloud_signal_quality_summary(self, headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+        return self._cloud_signal_quality_summary(self._cloud_context(headers))
+
+    def _shared_feed_token_status(self, broker_health: dict[str, Any]) -> dict[str, Any]:
+        status = str(broker_health.get("status", "unknown") or "unknown").lower()
+        ok = status in {"ok", "fyers_ok", "checking", "fallback"}
+        return {
+            "status": "active" if ok else "unknown",
+            "label": "Shared Paper Data Feed",
+            "button_label": "Shared Paper Data Feed",
+            "needs_refresh": False,
+            "token_present": False,
+            "login_url": "",
+            "message": "Market-data login is managed by the owner for this paper beta account.",
+            "updated_at": _now_ist_iso(),
+        }
 
     def _stop_process_tree(self, process: subprocess.Popen[str]) -> None:
         if os.name == "nt":
@@ -393,7 +587,7 @@ class EngineSupervisor:
             self.state.started_at = None
             return self.status()
 
-    def status(self) -> dict[str, Any]:
+    def status(self, headers: Mapping[str, str] | None = None) -> dict[str, Any]:
         with self._lock:
             process = self.state.process
             running = self._is_running()
@@ -406,39 +600,89 @@ class EngineSupervisor:
             elif not process:
                 exit_code = self.state.last_exit_code
 
+            identity = _request_cloud_identity(headers)
+            context: PaperContext | None = None
+            owner_scope = identity.get("source") == "local_owner"
+            try:
+                context = self._cloud_context(headers)
+                owner_scope = self._is_owner_context(context, headers)
+            except Exception:
+                if identity.get("source") != "local_owner":
+                    owner_scope = False
+
             broker_health = self.broker_health_status(quick=True)
-            active_trades = self.active_paper_trades(
-                broker_health=broker_health,
-                refresh_quotes=False,
-            )
-            return {
-                **self._base_status(),
-                "log_tail": self.tail(),
-                "candle_progress": self.candle_progress(),
-                "paper_trades": self.paper_trades(),
-                "active_paper_trades": active_trades,
-                "completed_paper_trades": self.completed_paper_trades(),
-                "paper_account": self.paper_account_summary(active_trades=active_trades),
-                "cloud_paper": self.cloud_paper_summary(),
-                "signal_quality": self.signal_quality_summary("all"),
-                "signal_quality_by_period": {
+            if owner_scope:
+                active_trades = self.active_paper_trades(
+                    broker_health=broker_health,
+                    refresh_quotes=False,
+                )
+                paper_trades = self.paper_trades()
+                completed_trades = self.completed_paper_trades()
+                paper_account = self.paper_account_summary(active_trades=active_trades)
+                signal_quality = self.signal_quality_summary("all")
+                signal_quality_by_period = {
                     "today": self.signal_quality_summary("today"),
                     "last3d": self.signal_quality_summary("last3d"),
-                    "all": self.signal_quality_summary("all"),
-                },
-                "strategy_leaderboard": self.strategy_leaderboard(),
-                "strategy_settings": self.cloud_strategy_settings(),
+                    "all": signal_quality,
+                }
+                strategy_leaderboard = self.strategy_leaderboard()
+                token_status = self.zerodha_token_status(broker_health=broker_health)
+                log_tail = self.tail()
+            else:
+                active_trades = self._cloud_active_paper_trades(context) if context else []
+                completed_trades = self._cloud_completed_paper_trades(context) if context else []
+                paper_trades = []
+                paper_account = self._cloud_paper_account_summary(context, active_trades) if context else {}
+                signal_quality = self._cloud_signal_quality_summary(context) if context else {
+                    "period": "all",
+                    "total_trades": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "win_rate_pct": 0.0,
+                    "avg_net_pnl": 0.0,
+                    "profit_factor": 0.0,
+                }
+                signal_quality_by_period = {
+                    "today": signal_quality,
+                    "last3d": signal_quality,
+                    "all": signal_quality,
+                }
+                strategy_leaderboard = []
+                token_status = self._shared_feed_token_status(broker_health)
+                log_tail = (
+                    "Owner engine log is hidden for this paper account.\n"
+                    "Per-user worker logs will appear after the user-worker scheduler layer is enabled."
+                )
+            return {
+                **self._base_status(),
+                "log_tail": log_tail,
+                "candle_progress": self.candle_progress(),
+                "paper_trades": paper_trades,
+                "active_paper_trades": active_trades,
+                "completed_paper_trades": completed_trades,
+                "paper_account": paper_account,
+                "cloud_paper": self.cloud_paper_summary(headers),
+                "signal_quality": signal_quality,
+                "signal_quality_by_period": signal_quality_by_period,
+                "strategy_leaderboard": strategy_leaderboard,
+                "strategy_settings": self.cloud_strategy_settings(headers),
                 "index_options_scanner": self.index_options_scanner_status(),
                 "market_session": self.market_session_status(),
                 "broker_health": broker_health,
-                "zerodha_token": self.zerodha_token_status(broker_health=broker_health),
+                "zerodha_token": token_status,
                 "watchlist": self.watchlist_items(),
             }
 
-    def live_ticks(self) -> dict[str, Any]:
+    def live_ticks(self, headers: Mapping[str, str] | None = None) -> dict[str, Any]:
         with self._lock:
             broker_health = self.broker_health_status()
-            active_trades = self.active_paper_trades(broker_health=broker_health)
+            if self.is_owner_request(headers):
+                active_trades = self.active_paper_trades(broker_health=broker_health)
+            else:
+                try:
+                    active_trades = self._cloud_active_paper_trades(self._cloud_context(headers))
+                except Exception:
+                    active_trades = []
             return {
                 "updated_at": _now_ist_iso(),
                 "poll_ms": LIVE_TICK_POLL_MS,
@@ -3107,6 +3351,211 @@ HTML_PAGE = """<!doctype html>
       border-color: #fecaca !important;
       color: #b91c1c !important;
     }
+    .cloud-paper-panel {
+      grid-column: 1 / -1;
+      position: relative;
+      overflow: hidden;
+      background:
+        radial-gradient(620px 220px at 10% 0%, rgba(15, 118, 110, 0.12), transparent 62%),
+        linear-gradient(135deg, #fffdf6 0%, #f8fafc 58%, #ecfdf5 100%) !important;
+      border: 1px solid #cbd5e1 !important;
+    }
+    .cloud-paper-panel::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(90deg, rgba(15, 118, 110, 0.055) 1px, transparent 1px),
+        linear-gradient(rgba(15, 118, 110, 0.04) 1px, transparent 1px);
+      background-size: 34px 34px;
+      mask-image: linear-gradient(90deg, black, transparent 72%);
+    }
+    .cloud-paper-head {
+      position: relative;
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      align-items: flex-start;
+      margin-bottom: 14px;
+    }
+    .cloud-paper-title {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .cloud-paper-title h2 {
+      margin: 0 !important;
+      color: #0f172a !important;
+    }
+    .cloud-badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      border: 1px solid #99f6e4;
+      background: #ccfbf1;
+      color: #115e59;
+      white-space: nowrap;
+    }
+    .cloud-badge.viewer {
+      border-color: #bfdbfe;
+      background: #dbeafe;
+      color: #1d4ed8;
+    }
+    .cloud-paper-note {
+      margin: 6px 0 0;
+      max-width: 820px;
+      color: #334155 !important;
+      font-size: 14px;
+      font-weight: 600;
+      line-height: 1.45;
+    }
+    .cloud-summary-grid {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .cloud-summary-card {
+      border: 1px solid #d7c7a5;
+      border-radius: 16px;
+      padding: 12px;
+      background: rgba(255, 255, 255, 0.78);
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+      min-height: 86px;
+    }
+    .cloud-summary-label {
+      color: #64748b;
+      font-size: 11px;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .cloud-summary-value {
+      margin-top: 7px;
+      color: #0f172a;
+      font-family: "JetBrains Mono", Consolas, monospace;
+      font-size: 17px;
+      font-weight: 900;
+      word-break: break-word;
+    }
+    .cloud-summary-sub {
+      margin-top: 6px;
+      color: #475569;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .cloud-strategy-head {
+      position: relative;
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      margin: 4px 0 10px;
+    }
+    .cloud-strategy-head strong {
+      color: #0f172a;
+      font-size: 15px;
+    }
+    .cloud-strategy-hint {
+      color: #475569;
+      font-size: 12px;
+      font-weight: 700;
+      text-align: right;
+    }
+    .cloud-strategy-grid {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .cloud-strategy-card {
+      border: 1px solid #cbd5e1;
+      border-left: 5px solid #94a3b8;
+      border-radius: 16px;
+      padding: 12px;
+      background: #ffffff;
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+      display: grid;
+      gap: 9px;
+      min-height: 148px;
+    }
+    .cloud-strategy-card.enabled {
+      border-left-color: #0f766e;
+      background: linear-gradient(180deg, #ffffff, #f0fdfa);
+    }
+    .cloud-strategy-card.disabled {
+      border-left-color: #b91c1c;
+      background: linear-gradient(180deg, #ffffff, #fef2f2);
+    }
+    .cloud-strategy-name {
+      color: #0f172a;
+      font-weight: 900;
+      line-height: 1.2;
+    }
+    .cloud-strategy-meta {
+      color: #475569;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .cloud-toggle {
+      align-self: end;
+      border: 0;
+      border-radius: 999px;
+      padding: 9px 12px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 900 !important;
+      transition: transform 160ms ease, box-shadow 160ms ease;
+    }
+    .cloud-toggle:hover,
+    .cloud-toggle:focus {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.16);
+      outline: 2px solid rgba(15, 118, 110, 0.18);
+      outline-offset: 2px;
+    }
+    .cloud-toggle.enabled {
+      background: #0f766e !important;
+      color: #ffffff !important;
+    }
+    .cloud-toggle.disabled {
+      background: #e2e8f0 !important;
+      color: #0f172a !important;
+    }
+    .owner-disabled {
+      opacity: 0.58;
+      cursor: not-allowed !important;
+      filter: grayscale(0.25);
+    }
+    @media (max-width: 1100px) {
+      .cloud-summary-grid,
+      .cloud-strategy-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+    @media (max-width: 700px) {
+      .cloud-paper-head,
+      .cloud-strategy-head {
+        display: grid;
+      }
+      .cloud-summary-grid,
+      .cloud-strategy-grid {
+        grid-template-columns: 1fr;
+      }
+      .cloud-strategy-hint {
+        text-align: left;
+      }
+    }
   </style>
 </head>
 <body>
@@ -3159,10 +3608,10 @@ HTML_PAGE = """<!doctype html>
           <span id="marketPill" class="market-pill market-closed">Market Closed</span>
         </div>
         <div class="actions">
-          <button class="start" onclick="startEngine()">Start Engine</button>
-          <button class="stop" onclick="stopEngine()">Stop Engine</button>
+          <button class="start" data-owner-control="true" onclick="startEngine()">Start Engine</button>
+          <button class="stop" data-owner-control="true" onclick="stopEngine()">Stop Engine</button>
           <button class="refresh" onclick="refreshStatus()">Refresh</button>
-          <button class="session" onclick="newSession()">New Session</button>
+          <button class="session" data-owner-control="true" onclick="newSession()">New Session</button>
         </div>
         <div class="meta">
           <div><strong>PID:</strong> <span id="pid">-</span></div>
@@ -3189,6 +3638,34 @@ HTML_PAGE = """<!doctype html>
           </div>
         </div>
       </div>
+      <div class="panel cloud-paper-panel">
+        <div class="cloud-paper-head">
+          <div>
+            <div class="cloud-paper-title">
+              <h2>Cloud Paper Control</h2>
+              <span id="cloudScopeBadge" class="cloud-badge">Paper-Only</span>
+            </div>
+            <p id="cloudPaperNote" class="cloud-paper-note">Loading account identity and strategy controls...</p>
+          </div>
+          <span class="cloud-badge">Session Aware</span>
+        </div>
+        <div id="cloudPaperSummary" class="cloud-summary-grid">
+          <div class="cloud-summary-card">
+            <div class="cloud-summary-label">User</div>
+            <div class="cloud-summary-value">-</div>
+          </div>
+        </div>
+        <div class="cloud-strategy-head">
+          <strong>Strategy Selection</strong>
+          <div id="cloudStrategyHint" class="cloud-strategy-hint">Saved per paper account. Existing open trades are still managed.</div>
+        </div>
+        <div id="cloudStrategySettings" class="cloud-strategy-grid">
+          <div class="cloud-summary-card">
+            <div class="cloud-summary-label">Strategies</div>
+            <div class="cloud-summary-value">Loading...</div>
+          </div>
+        </div>
+      </div>
       <div class="panel watchlist-panel">
         <h2>Watchlist Manager</h2>
         <div class="watchlist-form">
@@ -3208,7 +3685,7 @@ HTML_PAGE = """<!doctype html>
               <option value="day">day</option>
             </select>
           </div>
-          <button onclick="addWatchSymbol()">Add Stock</button>
+          <button data-owner-control="true" onclick="addWatchSymbol()">Add Stock</button>
         </div>
         <div id="watchlistChips" class="chip-list"></div>
         <div class="inline-actions">
@@ -3324,6 +3801,7 @@ HTML_PAGE = """<!doctype html>
     let candleProgressPage = 0;
     let tokenPanelPinned = false;
     let tokenNeedsRefresh = false;
+    let ownerScope = true;
 
     async function api(path, method = "GET", body = null) {
       const response = await fetch(path, {
@@ -3388,6 +3866,9 @@ HTML_PAGE = """<!doctype html>
     }
 
     async function submitZerodhaToken() {
+      if (!requireOwnerControl("Zerodha token refresh")) {
+        return;
+      }
       const input = document.getElementById("zerodhaTokenInput");
       const message = document.getElementById("tokenMessage");
       const value = input.value.trim();
@@ -3443,6 +3924,7 @@ HTML_PAGE = """<!doctype html>
       );
       document.getElementById("brokerMessage").textContent = broker.message || "";
       renderTokenStatus(data.zerodha_token || {});
+      renderCloudPaper(data.cloud_paper || {}, data.strategy_settings || []);
       document.getElementById("logPath").textContent = data.log_path ?? "-";
       const logTail = document.getElementById("logTail");
       logTail.textContent = data.log_tail || "No log output yet.";
@@ -3461,6 +3943,110 @@ HTML_PAGE = """<!doctype html>
       renderCompletedTrades(data.completed_paper_trades || []);
       renderPaperAccount(data.paper_account || {});
       renderWatchlist(data.watchlist || []);
+    }
+
+    function applyOwnerControls(cloud) {
+      ownerScope = cloud.owner_scope !== false;
+      document.querySelectorAll("[data-owner-control='true']").forEach((el) => {
+        el.disabled = !ownerScope;
+        el.classList.toggle("owner-disabled", !ownerScope);
+        el.title = ownerScope
+          ? ""
+          : "Restricted to the owner account during self-hosted paper beta.";
+      });
+    }
+
+    function requireOwnerControl(actionLabel) {
+      if (ownerScope) {
+        return true;
+      }
+      alert(`${actionLabel} is restricted to the owner account during self-hosted paper beta.`);
+      return false;
+    }
+
+    function renderCloudPaper(cloud, settings) {
+      applyOwnerControls(cloud);
+      const badge = document.getElementById("cloudScopeBadge");
+      const note = document.getElementById("cloudPaperNote");
+      const summary = document.getElementById("cloudPaperSummary");
+      const strategies = document.getElementById("cloudStrategySettings");
+      const hint = document.getElementById("cloudStrategyHint");
+      if (!badge || !note || !summary || !strategies || !hint) {
+        return;
+      }
+      const isOwner = cloud.owner_scope !== false;
+      const source = String(cloud.request_user_source || "local_owner").replaceAll("_", " ");
+      badge.textContent = isOwner ? "Owner Paper Worker" : "Viewer Paper Account";
+      badge.className = `cloud-badge ${isOwner ? "" : "viewer"}`;
+      note.textContent = isOwner
+        ? "This browser is on the owner account. Engine controls, Zerodha token refresh, global watchlist edits, and JSON migration are available here."
+        : "This browser has its own DB-backed paper account. Owner trades and logs are hidden; per-user strategy choices are saved now, and dedicated user workers are the next layer.";
+
+      summary.innerHTML = `
+        <div class="cloud-summary-card">
+          <div class="cloud-summary-label">User</div>
+          <div class="cloud-summary-value">${escapeHtml(cloud.user_email || "-")}</div>
+          <div class="cloud-summary-sub">${escapeHtml(source)} session</div>
+        </div>
+        <div class="cloud-summary-card">
+          <div class="cloud-summary-label">Paper Account</div>
+          <div class="cloud-summary-value">${escapeHtml(cloud.paper_account_name || "-")}</div>
+          <div class="cloud-summary-sub">${isOwner ? "Live local paper worker" : "Separate DB paper account"}</div>
+        </div>
+        <div class="cloud-summary-card">
+          <div class="cloud-summary-label">DB Trades</div>
+          <div class="cloud-summary-value">${Number(cloud.open_trades || 0)} open / ${Number(cloud.closed_trades || 0)} closed</div>
+          <div class="cloud-summary-sub">Saved at ${escapeHtml(cloud.state_saved_at || "-")}</div>
+        </div>
+        <div class="cloud-summary-card">
+          <div class="cloud-summary-label">Mode</div>
+          <div class="cloud-summary-value">Paper Only</div>
+          <div class="cloud-summary-sub">${escapeHtml(cloud.engine_scope || "local paper mode")}</div>
+        </div>
+      `;
+
+      const rows = Array.isArray(settings) ? settings : [];
+      hint.textContent = isOwner
+        ? "Owner toggles affect new entries after the engine settings cache refreshes. Open trades remain managed."
+        : "Viewer toggles are saved to this paper account and will drive entries when the per-user worker layer is enabled.";
+      if (!rows.length) {
+        strategies.innerHTML = `
+          <div class="cloud-summary-card">
+            <div class="cloud-summary-label">Strategies</div>
+            <div class="cloud-summary-value">Unavailable</div>
+            <div class="cloud-summary-sub">Strategy settings were not returned by the API.</div>
+          </div>
+        `;
+        return;
+      }
+      strategies.innerHTML = rows.map((row) => {
+        const enabled = Boolean(row.enabled);
+        const slug = String(row.strategy_slug || "");
+        return `
+          <div class="cloud-strategy-card ${enabled ? "enabled" : "disabled"}">
+            <div>
+              <div class="cloud-strategy-name">${escapeHtml(row.display_name || slug || "-")}</div>
+              <div class="cloud-strategy-meta">${escapeHtml(row.family || "-")} | ${escapeHtml(row.version || "local-v1")} | ${enabled ? "New entries enabled" : "New entries disabled"}</div>
+            </div>
+            <div class="cloud-strategy-meta">${escapeHtml(row.status || "stable")} strategy. Toggle changes are per account.</div>
+            <button class="cloud-toggle ${enabled ? "enabled" : "disabled"}" onclick='toggleStrategySetting(${JSON.stringify(slug)}, ${JSON.stringify(!enabled)})'>
+              ${enabled ? "Enabled" : "Disabled"}
+            </button>
+          </div>
+        `;
+      }).join("");
+    }
+
+    async function toggleStrategySetting(strategySlug, enabled) {
+      if (!strategySlug) {
+        return;
+      }
+      try {
+        await api("/api/strategy-settings", "POST", {strategy_slug: strategySlug, enabled});
+        await refreshStatus();
+      } catch (error) {
+        alert(error.message);
+      }
     }
 
     function escapeHtml(value) {
@@ -3595,6 +4181,9 @@ HTML_PAGE = """<!doctype html>
     }
 
     async function addSymbolToWatchlist(symbol, interval) {
+      if (!requireOwnerControl("Adding symbols to the global watchlist")) {
+        return;
+      }
       try {
         const data = await api("/api/watchlist", "POST", {action: "add", symbol, interval});
         renderStatus(data);
@@ -3605,6 +4194,9 @@ HTML_PAGE = """<!doctype html>
     }
 
     async function removeWatchSymbol(symbol) {
+      if (!requireOwnerControl("Removing symbols from the global watchlist")) {
+        return;
+      }
       if (!confirm(`Remove ${symbol} from watchlist?`)) {
         return;
       }
@@ -3669,7 +4261,7 @@ HTML_PAGE = """<!doctype html>
         return `
           <div class="chip golden">
             ${escapeHtml(symbol)} | ${fresh ? "Fresh" : "Active"} | ${strength}%
-            <button class="scan-add" onclick='addSymbolToWatchlist(${JSON.stringify(symbol)},"5minute")' ${inWatch ? "disabled" : ""}>${inWatch ? "âœ“" : "+"}</button>
+            <button class="scan-add" onclick='addSymbolToWatchlist(${JSON.stringify(symbol)},"5minute")' ${inWatch || !ownerScope ? "disabled" : ""}>${inWatch ? "Added" : "+"}</button>
           </div>
         `;
       }).join("");
@@ -3740,7 +4332,7 @@ HTML_PAGE = """<!doctype html>
                     <td>${escapeHtml(row.quantity)}</td>
                     <td>${formatNum(row.score, 2)}</td>
                     <td>${escapeHtml(row.setup || "-")}</td>
-                    <td><button class="scan-add" onclick='addSymbolToWatchlist(${JSON.stringify(String(row.symbol || ""))},"${watchInterval}")' ${watchlistSymbols.has(String(row.symbol || "").toUpperCase()) ? "disabled" : ""}>${watchlistSymbols.has(String(row.symbol || "").toUpperCase()) ? "âœ“" : "+"}</button></td>
+                    <td><button class="scan-add" onclick='addSymbolToWatchlist(${JSON.stringify(String(row.symbol || ""))},"${watchInterval}")' ${watchlistSymbols.has(String(row.symbol || "").toUpperCase()) || !ownerScope ? "disabled" : ""}>${watchlistSymbols.has(String(row.symbol || "").toUpperCase()) ? "Added" : "+"}</button></td>
                   </tr>
                 `).join("")}
               </tbody>
@@ -3778,7 +4370,7 @@ HTML_PAGE = """<!doctype html>
                     <td>${escapeHtml(row.direction || "-")}</td>
                     <td>${formatNum(row.close, 2)}</td>
                     <td>${escapeHtml(row.reason || "-")}</td>
-                    <td><button class="scan-add" onclick='addSymbolToWatchlist(${JSON.stringify(String(row.symbol || ""))},"${watchInterval}")' ${watchlistSymbols.has(String(row.symbol || "").toUpperCase()) ? "disabled" : ""}>${watchlistSymbols.has(String(row.symbol || "").toUpperCase()) ? "âœ“" : "+"}</button></td>
+                    <td><button class="scan-add" onclick='addSymbolToWatchlist(${JSON.stringify(String(row.symbol || ""))},"${watchInterval}")' ${watchlistSymbols.has(String(row.symbol || "").toUpperCase()) || !ownerScope ? "disabled" : ""}>${watchlistSymbols.has(String(row.symbol || "").toUpperCase()) ? "Added" : "+"}</button></td>
                   </tr>
                 `).join("")}
               </tbody>
@@ -4175,7 +4767,12 @@ HTML_PAGE = """<!doctype html>
       }
       container.innerHTML = items
         .filter((item) => item.enabled !== false)
-        .map((item) => `<div class="chip">${escapeHtml(item.symbol)} | ${escapeHtml(item.interval || '1minute')} <button class="chip-remove" title="Remove from watchlist" onclick='removeWatchSymbol(${JSON.stringify(String(item.symbol || ""))})'>&times;</button></div>`)
+        .map((item) => {
+          const removeButton = ownerScope
+            ? `<button class="chip-remove" title="Remove from watchlist" onclick='removeWatchSymbol(${JSON.stringify(String(item.symbol || ""))})'>&times;</button>`
+            : "";
+          return `<div class="chip">${escapeHtml(item.symbol)} | ${escapeHtml(item.interval || '1minute')} ${removeButton}</div>`;
+        })
         .join("");
       rerenderDailyScan();
     }
@@ -4236,16 +4833,25 @@ HTML_PAGE = """<!doctype html>
     }
 
     async function startEngine() {
+      if (!requireOwnerControl("Starting the engine")) {
+        return;
+      }
       const data = await api("/api/start", "POST", {});
       renderStatus(data);
     }
 
     async function stopEngine() {
+      if (!requireOwnerControl("Stopping the engine")) {
+        return;
+      }
       const data = await api("/api/stop", "POST");
       renderStatus(data);
     }
 
     async function manualExit(symbol, tradingsymbol) {
+      if (!requireOwnerControl("Manual exits")) {
+        return;
+      }
       if (!confirm(`Exit paper position ${tradingsymbol || symbol}?`)) {
         return;
       }
@@ -4259,6 +4865,9 @@ HTML_PAGE = """<!doctype html>
     }
 
     async function newSession() {
+      if (!requireOwnerControl("Starting a new owner session")) {
+        return;
+      }
       try {
         const data = await api("/api/new-session", "POST");
         renderStatus(data);
@@ -4268,6 +4877,9 @@ HTML_PAGE = """<!doctype html>
     }
 
     async function addWatchSymbol() {
+      if (!requireOwnerControl("Adding symbols to the global watchlist")) {
+        return;
+      }
       const symbolInput = document.getElementById("newSymbol");
       const intervalInput = document.getElementById("newInterval");
       const symbol = symbolInput.value.trim().toUpperCase();
@@ -4428,24 +5040,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/status":
-            self._respond_json(SUPERVISOR.status())
+            self._respond_json(SUPERVISOR.status(self.headers))
             return
         if parsed.path == "/api/cloud-paper":
-            self._respond_json(SUPERVISOR.cloud_paper_summary())
+            self._respond_json(SUPERVISOR.cloud_paper_summary(self.headers))
             return
         if parsed.path == "/api/strategy-settings":
-            self._respond_json({"strategy_settings": SUPERVISOR.cloud_strategy_settings()})
+            self._respond_json({"strategy_settings": SUPERVISOR.cloud_strategy_settings(self.headers)})
             return
         if parsed.path == "/api/live-ticks":
-            self._respond_json(SUPERVISOR.live_ticks())
+            self._respond_json(SUPERVISOR.live_ticks(self.headers))
             return
         if parsed.path == "/api/token-status":
-            self._respond_json(SUPERVISOR.zerodha_token_status(SUPERVISOR.broker_health_status()))
+            if SUPERVISOR.is_owner_request(self.headers):
+                self._respond_json(SUPERVISOR.zerodha_token_status(SUPERVISOR.broker_health_status()))
+            else:
+                self._respond_json(SUPERVISOR._shared_feed_token_status(SUPERVISOR.broker_health_status()))
             return
         if parsed.path == "/api/signal-quality":
             query = parse_qs(parsed.query)
             period = query.get("period", ["all"])[0]
-            self._respond_json(SUPERVISOR.signal_quality_summary(period))
+            if SUPERVISOR.is_owner_request(self.headers):
+                self._respond_json(SUPERVISOR.signal_quality_summary(period))
+            else:
+                self._respond_json(SUPERVISOR.cloud_signal_quality_summary(self.headers))
             return
         if parsed.path == "/api/daily-scan":
             query = parse_qs(parsed.query)
@@ -4622,6 +5240,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         parsed = urlparse(self.path)
         if parsed.path == "/api/start":
+            if self._owner_control_blocked():
+                return
             payload = self._read_json_body()
             config_path = payload.get("config_path") if isinstance(payload, dict) else None
             mode = payload.get("mode", "paper") if isinstance(payload, dict) else "paper"
@@ -4629,10 +5249,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/stop":
+            if self._owner_control_blocked():
+                return
             self._respond_json(SUPERVISOR.stop())
             return
 
         if parsed.path == "/api/new-session":
+            if self._owner_control_blocked():
+                return
             try:
                 self._respond_json(SUPERVISOR.new_session())
             except RuntimeError as exc:
@@ -4640,6 +5264,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/watchlist":
+            if self._owner_control_blocked():
+                return
             try:
                 payload = self._read_json_body()
                 action = str(payload.get("action", "add")).strip().lower()
@@ -4669,19 +5295,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     if isinstance(enabled_raw, str)
                     else bool(enabled_raw)
                 )
-                self._respond_json(SUPERVISOR.set_cloud_strategy_enabled(strategy_slug, enabled))
+                self._respond_json(SUPERVISOR.set_cloud_strategy_enabled(strategy_slug, enabled, self.headers))
             except RuntimeError as exc:
                 self._respond_error(HTTPStatus.BAD_REQUEST, str(exc))
             return
 
         if parsed.path == "/api/cloud-paper/migrate":
+            if self._owner_control_blocked():
+                return
             try:
-                self._respond_json(SUPERVISOR.mirror_json_state_to_cloud_db())
+                self._respond_json(SUPERVISOR.mirror_json_state_to_cloud_db(self.headers))
             except Exception as exc:
                 self._respond_error(HTTPStatus.BAD_REQUEST, str(exc))
             return
 
         if parsed.path == "/api/exit":
+            if self._owner_control_blocked():
+                return
             try:
                 payload = self._read_json_body()
                 self._respond_json(
@@ -4694,6 +5324,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._respond_error(HTTPStatus.BAD_REQUEST, str(exc))
             return
         if parsed.path == "/api/manual-exit":
+            if self._owner_control_blocked():
+                return
             try:
                 payload = self._read_json_body()
                 self._respond_json(
@@ -4707,6 +5339,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/zerodha-token":
+            if self._owner_control_blocked():
+                return
             try:
                 payload = self._read_json_body()
                 raw_input = str(payload.get("token_input", payload.get("request_token", "")))
@@ -4765,6 +5399,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not message:
             return False
         self._respond_error(HTTPStatus.UNAUTHORIZED, message)
+        return True
+
+    def _owner_control_blocked(self) -> bool:
+        if SUPERVISOR.is_owner_request(self.headers):
+            return False
+        self._respond_error(
+            HTTPStatus.FORBIDDEN,
+            "This control is restricted to the owner account in self-hosted paper beta mode.",
+        )
         return True
 
 

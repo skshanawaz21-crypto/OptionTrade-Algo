@@ -37,6 +37,16 @@ def db_path_from_env() -> Path:
     return Path(raw) if raw else DEFAULT_DB_PATH
 
 
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def display_name_from_email(email: str) -> str:
+    local_part = normalize_email(email).split("@", 1)[0]
+    cleaned = local_part.replace(".", " ").replace("_", " ").replace("-", " ").strip()
+    return cleaned.title() if cleaned else "Paper User"
+
+
 @dataclass(frozen=True)
 class PaperContext:
     user_id: str
@@ -245,23 +255,51 @@ class CloudStateStore:
         max_daily_loss: float = 0.0,
         max_open_positions: int = 0,
     ) -> PaperContext:
-        email = os.getenv("OPTIONTRADER_DEFAULT_USER_EMAIL", DEFAULT_USER_EMAIL).strip().lower()
+        email = normalize_email(os.getenv("OPTIONTRADER_DEFAULT_USER_EMAIL", DEFAULT_USER_EMAIL))
         display_name = os.getenv("OPTIONTRADER_DEFAULT_USER_NAME", "Local Owner").strip()
         account_name = os.getenv("OPTIONTRADER_DEFAULT_ACCOUNT_NAME", DEFAULT_ACCOUNT_NAME).strip()
+        return self.ensure_user_context(
+            email=email,
+            display_name=display_name,
+            account_name=account_name,
+            capital=capital,
+            max_daily_loss=max_daily_loss,
+            max_open_positions=max_open_positions,
+            role="admin",
+        )
+
+    def ensure_user_context(
+        self,
+        *,
+        email: str,
+        display_name: str | None = None,
+        account_name: str | None = None,
+        capital: float,
+        max_daily_loss: float = 0.0,
+        max_open_positions: int = 0,
+        role: str = "user",
+    ) -> PaperContext:
+        email = normalize_email(email)
+        if not email or "@" not in email:
+            raise ValueError("A valid user email is required for a paper account.")
+        display_name = (display_name or display_name_from_email(email)).strip()
+        account_name = (account_name or DEFAULT_ACCOUNT_NAME).strip()
         user_id = stable_id("optiontrader-user", email)
         account_id = stable_id("optiontrader-paper-account", email, account_name)
+        role = "admin" if role == "admin" else "user"
         now = now_ist_iso()
         with self.session() as conn:
             self._initialize(conn)
             conn.execute(
                 """
                 INSERT INTO users(id, email, display_name, role, status, created_at, updated_at)
-                VALUES(?, ?, ?, 'admin', 'active', ?, ?)
+                VALUES(?, ?, ?, ?, 'active', ?, ?)
                 ON CONFLICT(email) DO UPDATE SET
                     display_name=excluded.display_name,
+                    role=excluded.role,
                     updated_at=excluded.updated_at
                 """,
-                (user_id, email, display_name, now, now),
+                (user_id, email, display_name, role, now, now),
             )
             conn.execute(
                 """
