@@ -23,6 +23,14 @@ class LoggerStub:
         return None
 
 
+class CloudStateStub:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def list_strategy_settings(self, context):
+        return self.rows
+
+
 class TestEngineExits(unittest.TestCase):
     def _risk_namespace(self, **overrides):
         defaults = {
@@ -220,6 +228,22 @@ class TestEngineExits(unittest.TestCase):
         reason = TradingEngine._entry_risk_gate_reason(engine, signal)
 
         self.assertIn("min_option_premium", reason)
+
+    def test_cloud_strategy_setting_can_disable_engine_strategy(self) -> None:
+        engine = TradingEngine.__new__(TradingEngine)
+        engine.cloud_state = CloudStateStub(
+            [{"strategy_slug": "index_options_scanner", "enabled": False}]
+        )
+        engine.paper_context = object()
+        engine._strategy_settings_cache = None
+        engine.logger = LoggerStub()
+
+        self.assertFalse(
+            TradingEngine._cloud_strategy_enabled(engine, "index_options_scanner", True)
+        )
+        self.assertTrue(
+            TradingEngine._cloud_strategy_enabled(engine, "nifty250_2m_engulfing_scanner", True)
+        )
 
     def test_entry_risk_gate_blocks_strategy_after_daily_loss(self) -> None:
         engine = TradingEngine.__new__(TradingEngine)

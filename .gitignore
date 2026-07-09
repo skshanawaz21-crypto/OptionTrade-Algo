@@ -7,6 +7,9 @@ dashboard_stderr.log
 dist/
 data/paper_state.json
 data/engine_commands.jsonl
+data/*.db
+data/*.db-shm
+data/*.db-wal
 data/candles/
 data/log_archive/
 data/*.log

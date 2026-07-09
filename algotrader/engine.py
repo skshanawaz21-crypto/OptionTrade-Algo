@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from algotrader.brokers.factory import create_broker
 from algotrader.charges import equity_intraday_charges, option_buy_charges
+from algotrader.cloud_state import CloudStateStore, PaperContext
 from algotrader.contract_selector import ContractSelector
 from algotrader.config import AppSettings, ContractSelectionConfig, StrategyConfig, WatchItem
 from algotrader.logger import setup_logger
@@ -42,6 +43,8 @@ class TradingEngine:
         self.local_candle_store = LocalCandleStore(Path("data") / "candles")
         self.state_path = Path("data") / "paper_state.json"
         self.command_path = Path("data") / "engine_commands.jsonl"
+        self.cloud_state: CloudStateStore | None = None
+        self.paper_context: PaperContext | None = None
         self.open_trades: dict[str, OpenTrade] = {}
         self.closed_trades: list[ClosedTrade] = []
         self.option_chain_service = OptionChainService(self.broker)
@@ -51,7 +54,35 @@ class TradingEngine:
         self.dashboard_parent_pid = self._dashboard_parent_pid()
         self._last_open_trade_check: datetime | None = None
         self._open_trade_check_seconds = 5
+        self._strategy_settings_cache: tuple[datetime, dict[str, bool]] | None = None
+        self._initialize_cloud_state()
         self._load_state()
+
+    def _initialize_cloud_state(self) -> None:
+        if self.execution_mode != "paper":
+            return
+        try:
+            self.cloud_state = CloudStateStore.from_env()
+            self.paper_context = self.cloud_state.ensure_default_context(
+                capital=self.strategy_config.capital or self.settings.capital,
+                max_daily_loss=self.strategy_config.risk.max_daily_loss,
+                max_open_positions=self.strategy_config.risk.max_open_positions,
+            )
+            self.cloud_state.seed_default_strategies(
+                scanner_enabled=bool((self.strategy_config.scanner_2m_nifty250 or {}).get("enabled", False)),
+                index_scanner_enabled=bool((self.strategy_config.index_options_scanner or {}).get("enabled", False)),
+            )
+            self.cloud_state.ensure_default_strategy_settings(self.paper_context)
+            self.logger.info(
+                "Cloud paper DB active for %s/%s at %s",
+                self.paper_context.user_email,
+                self.paper_context.paper_account_name,
+                self.cloud_state.path,
+            )
+        except Exception as exc:
+            self.cloud_state = None
+            self.paper_context = None
+            self.logger.warning("Cloud paper DB unavailable; continuing with JSON state only: %s", exc)
 
     def run_forever(self) -> None:
         data_mode = "historical-api" if self.use_historical_api else "local-candles"
@@ -115,17 +146,51 @@ class TradingEngine:
         if self._daily_loss_kill_switch_if_needed():
             return
         self._square_off_open_trades_if_due()
-        if self._scanner_enabled():
+        if self._scanner_enabled() and self._cloud_strategy_enabled("nifty250_2m_engulfing_scanner", True):
             self._run_nifty250_scanner_strategy()
-        if self._index_options_scanner_enabled():
+        if self._index_options_scanner_enabled() and self._cloud_strategy_enabled("index_options_scanner", True):
             self._run_index_options_scanner_strategy()
         for item in self.strategy_config.watchlist:
             if not item.enabled:
+                continue
+            if not self._watchlist_strategy_enabled(item):
+                self.logger.info("Watchlist strategy disabled for %s; skipping", item.symbol)
                 continue
             try:
                 self._evaluate_symbol(item)
             except Exception as exc:
                 self.logger.exception("Failed on %s: %s", item.symbol, exc)
+
+    def _watchlist_strategy_enabled(self, item: WatchItem) -> bool:
+        if item.instrument_type == "stock_option":
+            return self._cloud_strategy_enabled("watchlist_directional_stock_options", True)
+        if item.instrument_type == "index_option":
+            return self._cloud_strategy_enabled("watchlist_directional_index_options", True)
+        return True
+
+    def _cloud_strategy_enabled(self, strategy_slug: str, default: bool) -> bool:
+        if self.cloud_state is None or self.paper_context is None:
+            return default
+        try:
+            settings = self._cloud_strategy_settings_map()
+        except Exception as exc:
+            self.logger.warning("Could not read cloud strategy settings; using config defaults: %s", exc)
+            return default
+        return settings.get(strategy_slug, default)
+
+    def _cloud_strategy_settings_map(self) -> dict[str, bool]:
+        now = datetime.now()
+        if (
+            self._strategy_settings_cache is not None
+            and (now - self._strategy_settings_cache[0]).total_seconds() < 15
+        ):
+            return self._strategy_settings_cache[1]
+        if self.cloud_state is None or self.paper_context is None:
+            return {}
+        rows = self.cloud_state.list_strategy_settings(self.paper_context)
+        settings = {str(row["strategy_slug"]): bool(row["enabled"]) for row in rows}
+        self._strategy_settings_cache = (now, settings)
+        return settings
 
     def _evaluate_symbol(self, item: WatchItem) -> None:
         to_dt = datetime.now()
@@ -864,14 +929,32 @@ class TradingEngine:
     def _load_state(self) -> None:
         if self.execution_mode != "paper":
             return
-        if not self.state_path.exists():
-            return
+        raw: dict[str, object] | None = None
         try:
-            raw = json.loads(self.state_path.read_text(encoding="utf-8"))
+            if self.state_path.exists():
+                raw = json.loads(self.state_path.read_text(encoding="utf-8"))
+            elif self.cloud_state is not None and self.paper_context is not None:
+                raw = self.cloud_state.load_paper_state(self.paper_context)
+                if raw:
+                    self.logger.info(
+                        "Restoring paper state from cloud DB at %s because %s is absent",
+                        self.cloud_state.path,
+                        self.state_path,
+                    )
         except json.JSONDecodeError:
             self.logger.warning("Could not parse paper state file at %s", self.state_path)
             return
+        except Exception as exc:
+            self.logger.warning("Could not load paper state: %s", exc)
+            return
 
+        if not raw:
+            return
+        self._restore_state_payload(raw)
+        if self.state_path.exists():
+            self._mirror_state_to_cloud_db(raw)
+
+    def _restore_state_payload(self, raw: dict[str, object]) -> None:
         trades = raw.get("open_trades", [])
         for item in trades:
             trade = OpenTrade.from_dict(item)
@@ -922,8 +1005,13 @@ class TradingEngine:
         if self.execution_mode != "paper":
             return
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = self._paper_state_payload()
+        self.state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self._mirror_state_to_cloud_db(payload)
+
+    def _paper_state_payload(self) -> dict[str, object]:
         capital_committed = sum(trade.capital_used() for trade in self.open_trades.values())
-        payload = {
+        return {
             "saved_at": now_ist().isoformat(),
             "account": {
                 "starting_capital": self.risk_manager.capital,
@@ -935,7 +1023,14 @@ class TradingEngine:
             "open_trades": [trade.to_dict() for trade in self.open_trades.values()],
             "closed_trades": [trade.to_dict() for trade in self.closed_trades],
         }
-        self.state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _mirror_state_to_cloud_db(self, payload: dict[str, object]) -> None:
+        if self.cloud_state is None or self.paper_context is None:
+            return
+        try:
+            self.cloud_state.save_paper_state(self.paper_context, payload)
+        except Exception as exc:
+            self.logger.warning("Could not mirror paper state to cloud DB: %s", exc)
 
     def _available_capital(self) -> float:
         committed = sum(trade.capital_used() for trade in self.open_trades.values())

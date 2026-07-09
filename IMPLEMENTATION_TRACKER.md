@@ -78,6 +78,7 @@ Status legend:
 | T55 | Add self-hosted private-beta cloud path | DONE | T54 | Extended the cloud paper blueprint with an always-on-machine Phase 1A path using Cloudflare Tunnel/Access, local PostgreSQL/Redis, central market-data cache guidance, 5-20 user capacity expectations, and data-licensing cautions |
 | T56 | Add self-hosted beta launcher and Cloudflare Access guard | DONE | T55 | Added an optional dashboard Cloudflare Access header guard, tests, a self-hosted launcher, a separate OptionTrader Cloudflare config generator/template, and a runbook without modifying `C:\AlgoTrader` |
 | T57 | Generate local OptionTrader Cloudflare tunnel config | DONE | T56 | Created `%USERPROFILE%\.cloudflared\optiontrader.yml` for the existing Cloudflare tunnel/hostname to route to OptionTrader port `8877`, leaving the original AlgoTrader config on port `8765` unchanged |
+| T58 | Add database-backed paper foundation | DONE | T57 | Added SQLite-backed users, paper accounts, strategy definitions/settings, paper state mirroring, normalized open/closed paper trade tables, strategy toggle enforcement, migration tooling, central quote cache table, dashboard APIs, and regression tests |
 
 ## Change Log
 
@@ -135,6 +136,7 @@ Status legend:
 | 2026-07-09 | T55 completed: added the self-hosted private-beta path to the cloud paper blueprint, covering Cloudflare Tunnel/Access routing, local database/cache services, 5-20 user assumptions, and the distinction between API-limit caching and market-data redistribution rights. |
 | 2026-07-09 | T56 completed: implemented the first self-hosted beta foundation with optional Cloudflare Access enforcement, PowerShell startup/config scripts, a separate OptionTrader tunnel template, runbook docs, and guard regression tests. |
 | 2026-07-09 | T57 completed: generated the local OptionTrader-specific Cloudflare tunnel config under the Windows user profile and validated that it routes the existing hostname to `http://127.0.0.1:8877` without changing the original AlgoTrader tunnel config. |
+| 2026-07-09 | T58 completed: added the database-backed paper foundation with default local user/account, JSON-to-DB mirroring/migration, per-account strategy settings honored by the engine, central quote cache storage, dashboard APIs, and DB runbook/tests. |
 
 ## Working Rules
 

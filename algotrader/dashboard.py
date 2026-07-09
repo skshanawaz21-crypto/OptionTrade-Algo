@@ -23,6 +23,7 @@ import yfinance as yf
 from algotrader.config import AppSettings, WatchItem
 from algotrader.brokers.factory import create_broker
 from algotrader.brokers.fyers import FyersBroker
+from algotrader.cloud_state import CloudStateStore, PaperContext
 from algotrader.marketdata import completed_intraday_candles
 from algotrader.nifty250_strategy import (
     POPULAR_NSE_SYMBOLS,
@@ -196,6 +197,8 @@ class EngineSupervisor:
         self._underlying_quote_cache: dict[str, tuple[datetime, dict[str, Any] | None]] = {}
         self._index_tick_cache: tuple[datetime, list[dict[str, Any]]] | None = None
         self._index_scanner_cache: tuple[datetime, list[dict[str, Any]]] | None = None
+        self._cloud_state = CloudStateStore.from_env()
+        self._cloud_context_cache: PaperContext | None = None
 
     def start(self, config_path: str | None = None, mode: str = "paper") -> dict[str, Any]:
         with self._lock:
@@ -279,6 +282,67 @@ class EngineSupervisor:
             "log_path": str(self.state.log_path),
         }
 
+    def _cloud_context(self) -> PaperContext:
+        if self._cloud_context_cache is not None:
+            return self._cloud_context_cache
+        raw_config: dict[str, Any] = {}
+        config_path = self.state.config_path if self.state.config_path.exists() else DEFAULT_CONFIG
+        if config_path.exists():
+            try:
+                raw_config = json.loads(config_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                raw_config = {}
+        risk = raw_config.get("risk", {}) if isinstance(raw_config.get("risk"), dict) else {}
+        context = self._cloud_state.ensure_default_context(
+            capital=float(raw_config.get("capital", AppSettings.from_env().capital) or 0.0),
+            max_daily_loss=float(risk.get("max_daily_loss", 0.0) or 0.0),
+            max_open_positions=int(risk.get("max_open_positions", 0) or 0),
+        )
+        self._cloud_state.seed_default_strategies(
+            scanner_enabled=bool((raw_config.get("scanner_2m_nifty250") or {}).get("enabled", False)),
+            index_scanner_enabled=bool((raw_config.get("index_options_scanner") or {}).get("enabled", False)),
+        )
+        self._cloud_state.ensure_default_strategy_settings(context)
+        self._cloud_context_cache = context
+        return context
+
+    def cloud_paper_summary(self) -> dict[str, Any]:
+        try:
+            context = self._cloud_context()
+            return self._cloud_state.summary(context)
+        except Exception as exc:
+            return {
+                "db_path": str(self._cloud_state.path),
+                "status": "unavailable",
+                "message": str(exc),
+            }
+
+    def cloud_strategy_settings(self) -> list[dict[str, Any]]:
+        try:
+            return self._cloud_state.list_strategy_settings(self._cloud_context())
+        except Exception:
+            return []
+
+    def set_cloud_strategy_enabled(self, strategy_slug: str, enabled: bool) -> dict[str, Any]:
+        normalized = strategy_slug.strip().lower()
+        if not normalized:
+            raise RuntimeError("strategy_slug is required.")
+        try:
+            context = self._cloud_context()
+            self._cloud_state.set_strategy_enabled(context, normalized, enabled)
+            return {
+                "ok": True,
+                "strategy_slug": normalized,
+                "enabled": enabled,
+                "strategy_settings": self.cloud_strategy_settings(),
+            }
+        except KeyError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    def mirror_json_state_to_cloud_db(self) -> dict[str, Any]:
+        context = self._cloud_context()
+        return self._cloud_state.migrate_json_state(context, DEFAULT_STATE)
+
     def _stop_process_tree(self, process: subprocess.Popen[str]) -> None:
         if os.name == "nt":
             try:
@@ -355,6 +419,7 @@ class EngineSupervisor:
                 "active_paper_trades": active_trades,
                 "completed_paper_trades": self.completed_paper_trades(),
                 "paper_account": self.paper_account_summary(active_trades=active_trades),
+                "cloud_paper": self.cloud_paper_summary(),
                 "signal_quality": self.signal_quality_summary("all"),
                 "signal_quality_by_period": {
                     "today": self.signal_quality_summary("today"),
@@ -362,6 +427,7 @@ class EngineSupervisor:
                     "all": self.signal_quality_summary("all"),
                 },
                 "strategy_leaderboard": self.strategy_leaderboard(),
+                "strategy_settings": self.cloud_strategy_settings(),
                 "index_options_scanner": self.index_options_scanner_status(),
                 "market_session": self.market_session_status(),
                 "broker_health": broker_health,
@@ -606,22 +672,22 @@ class EngineSupervisor:
                 if change is None and last_price is not None and previous_close:
                     change = last_price - previous_close
                 change_pct = (change / previous_close) * 100.0 if change is not None and previous_close else None
-                rows.append(
-                    {
-                        **item,
-                        "key": key,
-                        "last_price": last_price,
-                        "change": change,
-                        "change_pct": change_pct,
-                        "previous_close": previous_close,
-                        "open": self._to_float(ohlc.get("open")),
-                        "high": self._to_float(ohlc.get("high")),
-                        "low": self._to_float(ohlc.get("low")),
-                        "status": "live" if payload.get("last_price") is not None else "missing",
-                        "source": "kite_quote",
-                        "updated_at": _now_ist_iso(),
-                    }
-                )
+                row = {
+                    **item,
+                    "key": key,
+                    "last_price": last_price,
+                    "change": change,
+                    "change_pct": change_pct,
+                    "previous_close": previous_close,
+                    "open": self._to_float(ohlc.get("open")),
+                    "high": self._to_float(ohlc.get("high")),
+                    "low": self._to_float(ohlc.get("low")),
+                    "status": "live" if payload.get("last_price") is not None else "missing",
+                    "source": "kite_quote",
+                    "updated_at": _now_ist_iso(),
+                }
+                rows.append(row)
+                self._cache_market_data_row(row)
         except Exception as exc:
             error = str(exc) or exc.__class__.__name__
             if self._index_tick_cache:
@@ -653,6 +719,20 @@ class EngineSupervisor:
 
         self._index_tick_cache = (now, rows)
         return rows
+
+    def _cache_market_data_row(self, row: dict[str, Any]) -> None:
+        try:
+            self._cloud_state.upsert_market_data_cache(
+                provider=str(row.get("source") or "unknown"),
+                exchange=str(row.get("exchange") or ""),
+                symbol=str(row.get("tradingsymbol") or row.get("symbol") or ""),
+                data_type="quote",
+                payload=row,
+                last_price=self._to_float(row.get("last_price")),
+                as_of=str(row.get("updated_at") or _now_ist_iso()),
+            )
+        except Exception:
+            return
 
     def index_options_scanner_status(self) -> list[dict[str, Any]]:
         now = datetime.now(IST)
@@ -4350,6 +4430,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/status":
             self._respond_json(SUPERVISOR.status())
             return
+        if parsed.path == "/api/cloud-paper":
+            self._respond_json(SUPERVISOR.cloud_paper_summary())
+            return
+        if parsed.path == "/api/strategy-settings":
+            self._respond_json({"strategy_settings": SUPERVISOR.cloud_strategy_settings()})
+            return
         if parsed.path == "/api/live-ticks":
             self._respond_json(SUPERVISOR.live_ticks())
             return
@@ -4570,6 +4656,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     )
                 )
             except RuntimeError as exc:
+                self._respond_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+
+        if parsed.path == "/api/strategy-settings":
+            try:
+                payload = self._read_json_body()
+                strategy_slug = str(payload.get("strategy_slug", ""))
+                enabled_raw = payload.get("enabled", False)
+                enabled = (
+                    str(enabled_raw).strip().lower() in {"1", "true", "yes", "on"}
+                    if isinstance(enabled_raw, str)
+                    else bool(enabled_raw)
+                )
+                self._respond_json(SUPERVISOR.set_cloud_strategy_enabled(strategy_slug, enabled))
+            except RuntimeError as exc:
+                self._respond_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+
+        if parsed.path == "/api/cloud-paper/migrate":
+            try:
+                self._respond_json(SUPERVISOR.mirror_json_state_to_cloud_db())
+            except Exception as exc:
                 self._respond_error(HTTPStatus.BAD_REQUEST, str(exc))
             return
 
