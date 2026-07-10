@@ -87,10 +87,21 @@ Environment variables used by the guard:
 ```text
 OPTIONTRADER_CLOUD_ACCESS_REQUIRED=1
 OPTIONTRADER_CLOUD_ALLOWED_EMAILS=owner@example.com,friend@example.com
+OPTIONTRADER_OWNER_EMAILS=owner@example.com
 OPTIONTRADER_CLOUD_LOCAL_BYPASS=1
 ```
 
 The `start_self_hosted_beta.ps1` script sets these when `-CloudAccessGuard` is used.
+
+`OPTIONTRADER_OWNER_EMAILS` is what makes a public/mobile Cloudflare Access browser an owner session. Without it, the public browser is treated as a viewer paper account, so Zerodha token refresh is disabled and the token area shows viewer/shared-feed messaging.
+
+Optional launch-time override:
+
+```powershell
+.\start_self_hosted_beta.cmd -CloudAccessGuard -AllowedEmails "owner@example.com,friend@example.com" -OwnerEmails "owner@example.com"
+```
+
+If `-OwnerEmails` is omitted, the dashboard uses `.env` values instead.
 
 ## One-Time Cloudflare Setup
 

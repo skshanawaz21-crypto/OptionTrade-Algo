@@ -1,8 +1,16 @@
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from algotrader.dashboard import _cloud_access_auth_error, _request_cloud_identity
+from algotrader.dashboard import (
+    EngineSupervisor,
+    _cloud_access_auth_error,
+    _is_owner_email,
+    _owner_emails,
+    _request_cloud_identity,
+)
 
 
 class CloudAccessGuardTests(unittest.TestCase):
@@ -90,6 +98,76 @@ class CloudAccessGuardTests(unittest.TestCase):
 
         self.assertEqual(identity["email"], "owner@example.com")
         self.assertEqual(identity["source"], "local_owner")
+
+    def test_owner_emails_include_default_and_explicit_cloud_owners(self):
+        with patch.dict(
+            os.environ,
+            {
+                "OPTIONTRADER_DEFAULT_USER_EMAIL": "local-owner@optiontrader.local",
+                "OPTIONTRADER_OWNER_EMAILS": "Owner@Example.com, second@example.com",
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                _owner_emails(),
+                {
+                    "local-owner@optiontrader.local",
+                    "owner@example.com",
+                    "second@example.com",
+                },
+            )
+
+    def test_is_owner_email_accepts_explicit_cloud_owner_alias(self):
+        with patch.dict(
+            os.environ,
+            {
+                "OPTIONTRADER_DEFAULT_USER_EMAIL": "local-owner@optiontrader.local",
+                "OPTIONTRADER_OWNER_EMAILS": "Owner@Example.com",
+            },
+            clear=True,
+        ):
+            self.assertTrue(_is_owner_email("owner@example.com"))
+            self.assertFalse(_is_owner_email("friend@example.com"))
+
+    def test_owner_emails_are_allowed_by_app_guard(self):
+        with patch.dict(
+            os.environ,
+            {
+                "OPTIONTRADER_CLOUD_ACCESS_REQUIRED": "1",
+                "OPTIONTRADER_CLOUD_ALLOWED_EMAILS": "friend@example.com",
+                "OPTIONTRADER_OWNER_EMAILS": "owner@example.com",
+            },
+            clear=True,
+        ):
+            self.assertIsNone(
+                _cloud_access_auth_error(
+                    {
+                        "Host": "paper.example.com",
+                        "Cf-Access-Authenticated-User-Email": "owner@example.com",
+                    }
+                )
+            )
+
+    def test_owner_cloudflare_alias_uses_default_paper_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(
+                os.environ,
+                {
+                    "OPTIONTRADER_DB_PATH": str(Path(tmp) / "optiontrader.db"),
+                    "OPTIONTRADER_DEFAULT_USER_EMAIL": "local-owner@optiontrader.local",
+                    "OPTIONTRADER_OWNER_EMAILS": "owner@example.com",
+                },
+                clear=True,
+            ):
+                supervisor = EngineSupervisor()
+                context = supervisor._cloud_context(
+                    {
+                        "Host": "paper.example.com",
+                        "Cf-Access-Authenticated-User-Email": "owner@example.com",
+                    }
+                )
+
+            self.assertEqual(context.user_email, "local-owner@optiontrader.local")
 
 
 if __name__ == "__main__":

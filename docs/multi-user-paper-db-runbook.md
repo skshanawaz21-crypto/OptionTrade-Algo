@@ -75,6 +75,7 @@ Important privacy behavior:
 - Non-owner Cloudflare users do not receive owner JSON trade history.
 - Non-owner Cloudflare users do not receive the owner engine log.
 - Non-owner Cloudflare users cannot start/stop/reset the global engine, edit the global watchlist, refresh the owner's Zerodha token, run JSON migration, or manual-exit owner trades.
+- Non-owner Cloudflare users see `Viewer Paper Mode` in the token area because the owner-managed market-data login is intentionally unavailable to them.
 
 Important architecture note:
 
@@ -96,11 +97,26 @@ These can be changed in `.env`:
 ```text
 OPTIONTRADER_DB_PATH=data/optiontrader.db
 OPTIONTRADER_DEFAULT_USER_EMAIL=local-owner@optiontrader.local
+OPTIONTRADER_OWNER_EMAILS=
 OPTIONTRADER_DEFAULT_USER_NAME=Local Owner
 OPTIONTRADER_DEFAULT_ACCOUNT_NAME=Default Paper Account
 ```
 
-If the owner will use the public Cloudflare hostname, set `OPTIONTRADER_DEFAULT_USER_EMAIL` to the owner's Cloudflare Access email. Otherwise the public owner browser will be treated as a separate viewer account.
+If the owner will use the public Cloudflare hostname or mobile browser, set:
+
+```text
+OPTIONTRADER_OWNER_EMAILS=your-cloudflare-login-email@example.com
+```
+
+You may also set `OPTIONTRADER_DEFAULT_USER_EMAIL` to the same email, but `OPTIONTRADER_OWNER_EMAILS` is preferred because it lets the local default account remain stable while still granting owner controls to the owner's public/mobile Cloudflare Access session.
+
+If this is not configured, the public/mobile owner browser will be treated as a separate viewer account. In that case Zerodha token refresh will show as unavailable and submitting a token will be blocked.
+
+Owner email behavior:
+
+- Emails in `OPTIONTRADER_OWNER_EMAILS` are aliases for the local owner paper worker.
+- Owner aliases can refresh Zerodha token, start/stop the engine, edit the global watchlist, and change strategy toggles that the current engine reads.
+- Friend/viewer emails still get separate DB paper accounts and cannot access owner controls or owner logs/trades.
 
 ## Initialize Or Migrate DB
 

@@ -152,6 +152,20 @@ def _csv_values(value: str | None) -> list[str]:
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
 
+def _default_user_email() -> str:
+    return normalize_email(os.getenv("OPTIONTRADER_DEFAULT_USER_EMAIL", DEFAULT_USER_EMAIL))
+
+
+def _owner_emails() -> set[str]:
+    emails = {_default_user_email()}
+    emails.update(normalize_email(item) for item in _csv_values(os.getenv("OPTIONTRADER_OWNER_EMAILS")))
+    return {email for email in emails if email}
+
+
+def _is_owner_email(email: str) -> bool:
+    return normalize_email(email) in _owner_emails()
+
+
 def _host_is_local(host: str) -> bool:
     normalized = host.strip().lower()
     if normalized.startswith("[::1]"):
@@ -176,6 +190,8 @@ def _cloud_access_auth_error(headers: Mapping[str, str]) -> str | None:
         item.lower()
         for item in _csv_values(os.getenv("OPTIONTRADER_CLOUD_ALLOWED_EMAILS"))
     }
+    if allowed_emails:
+        allowed_emails.update(_owner_emails())
     if allowed_emails and email not in allowed_emails:
         return "This Cloudflare Access user is not allowed to use OptionTrader."
 
@@ -183,7 +199,7 @@ def _cloud_access_auth_error(headers: Mapping[str, str]) -> str | None:
 
 
 def _default_cloud_identity() -> dict[str, str]:
-    email = normalize_email(os.getenv("OPTIONTRADER_DEFAULT_USER_EMAIL", DEFAULT_USER_EMAIL))
+    email = _default_user_email()
     display_name = os.getenv("OPTIONTRADER_DEFAULT_USER_NAME", "Local Owner").strip() or "Local Owner"
     return {
         "email": email,
@@ -314,9 +330,10 @@ class EngineSupervisor:
 
     def _cloud_context(self, headers: Mapping[str, str] | None = None) -> PaperContext:
         identity = _request_cloud_identity(headers)
-        email = normalize_email(identity["email"])
-        if email in self._cloud_context_cache:
-            return self._cloud_context_cache[email]
+        request_email = normalize_email(identity["email"])
+        context_email = _default_user_email() if _is_owner_email(request_email) else request_email
+        if context_email in self._cloud_context_cache:
+            return self._cloud_context_cache[context_email]
         raw_config: dict[str, Any] = {}
         config_path = self.state.config_path if self.state.config_path.exists() else DEFAULT_CONFIG
         if config_path.exists():
@@ -325,31 +342,34 @@ class EngineSupervisor:
             except json.JSONDecodeError:
                 raw_config = {}
         risk = raw_config.get("risk", {}) if isinstance(raw_config.get("risk"), dict) else {}
-        default_email = normalize_email(os.getenv("OPTIONTRADER_DEFAULT_USER_EMAIL", DEFAULT_USER_EMAIL))
         context = self._cloud_state.ensure_user_context(
-            email=email,
-            display_name=identity.get("display_name") or display_name_from_email(email),
+            email=context_email,
+            display_name=(
+                os.getenv("OPTIONTRADER_DEFAULT_USER_NAME", "Local Owner").strip()
+                if context_email == _default_user_email()
+                else identity.get("display_name")
+            )
+            or display_name_from_email(context_email),
             account_name=os.getenv("OPTIONTRADER_DEFAULT_ACCOUNT_NAME", DEFAULT_ACCOUNT_NAME).strip()
             or DEFAULT_ACCOUNT_NAME,
             capital=float(raw_config.get("capital", AppSettings.from_env().capital) or 0.0),
             max_daily_loss=float(risk.get("max_daily_loss", 0.0) or 0.0),
             max_open_positions=int(risk.get("max_open_positions", 0) or 0),
-            role="admin" if email == default_email else "user",
+            role="admin" if _is_owner_email(request_email) else "user",
         )
         self._cloud_state.seed_default_strategies(
             scanner_enabled=bool((raw_config.get("scanner_2m_nifty250") or {}).get("enabled", False)),
             index_scanner_enabled=bool((raw_config.get("index_options_scanner") or {}).get("enabled", False)),
         )
         self._cloud_state.ensure_default_strategy_settings(context)
-        self._cloud_context_cache[email] = context
+        self._cloud_context_cache[context_email] = context
         return context
 
     def _is_owner_context(self, context: PaperContext, headers: Mapping[str, str] | None = None) -> bool:
         identity = _request_cloud_identity(headers)
         if identity.get("source") == "local_owner":
             return True
-        default_email = normalize_email(os.getenv("OPTIONTRADER_DEFAULT_USER_EMAIL", DEFAULT_USER_EMAIL))
-        return normalize_email(context.user_email) == default_email
+        return _is_owner_email(identity.get("email", "")) or _is_owner_email(context.user_email)
 
     def is_owner_request(self, headers: Mapping[str, str] | None = None) -> bool:
         try:
@@ -361,7 +381,9 @@ class EngineSupervisor:
         try:
             context = self._cloud_context(headers)
             summary = self._cloud_state.summary(context)
-            summary["request_user_source"] = _request_cloud_identity(headers).get("source", "unknown")
+            identity = _request_cloud_identity(headers)
+            summary["request_user_email"] = identity.get("email", context.user_email)
+            summary["request_user_source"] = identity.get("source", "unknown")
             summary["owner_scope"] = self._is_owner_context(context, headers)
             summary["engine_scope"] = "local_owner_worker" if summary["owner_scope"] else "viewer_account_pending_worker"
             return summary
@@ -528,12 +550,12 @@ class EngineSupervisor:
         ok = status in {"ok", "fyers_ok", "checking", "fallback"}
         return {
             "status": "active" if ok else "unknown",
-            "label": "Shared Paper Data Feed",
-            "button_label": "Shared Paper Data Feed",
+            "label": "Viewer Paper Mode",
+            "button_label": "Viewer Paper Mode",
             "needs_refresh": False,
             "token_present": False,
             "login_url": "",
-            "message": "Market-data login is managed by the owner for this paper beta account.",
+            "message": "Zerodha login is disabled because this browser is not an owner session. Set OPTIONTRADER_OWNER_EMAILS to your Cloudflare Access email to enable token refresh here.",
             "updated_at": _now_ist_iso(),
         }
 
@@ -4174,7 +4196,7 @@ HTML_PAGE = """<!doctype html>
       summary.innerHTML = `
         <div class="cloud-summary-card">
           <div class="cloud-summary-label">User</div>
-          <div class="cloud-summary-value">${escapeHtml(cloud.user_email || "-")}</div>
+          <div class="cloud-summary-value">${escapeHtml(cloud.request_user_email || cloud.user_email || "-")}</div>
           <div class="cloud-summary-sub">${escapeHtml(source)} session</div>
         </div>
         <div class="cloud-summary-card">
