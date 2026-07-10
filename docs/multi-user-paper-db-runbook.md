@@ -20,6 +20,7 @@ Implemented tables:
 
 - `users`
 - `paper_accounts`
+- `user_broker_profiles`
 - `strategy_definitions`
 - `strategy_versions`
 - `user_strategy_settings`
@@ -182,6 +183,49 @@ Dashboard UI:
 - Strategy cards can be toggled from the browser.
 - Owner-only controls are disabled for viewer accounts.
 
+## Per-User Broker Profile
+
+Each paper user can now choose a broker profile from the dashboard:
+
+- Zerodha Kite
+- Dhan
+- Upstox
+
+The selected broker is stored per user/paper account in:
+
+```text
+user_broker_profiles
+```
+
+Secrets are encrypted before being written to SQLite. The local encryption key is loaded from:
+
+```text
+OPTIONTRADER_SECRET_KEY
+```
+
+or generated/stored at:
+
+```text
+OPTIONTRADER_SECRET_KEY_FILE=data/optiontrader_secret.key
+```
+
+The key file is local runtime state and must not be committed.
+
+Dashboard/API endpoints:
+
+```text
+GET  /api/user-broker
+POST /api/user-broker
+```
+
+Important:
+
+- Broker API keys/tokens are never sent back to the browser after saving.
+- Dashboard summaries only show masked identifiers.
+- Current working adapter support is still Zerodha-first in the owner/local engine.
+- Dhan and Upstox profiles can be saved now, but their market-data adapters and per-user worker execution still need to be implemented before they can drive independent paper trading.
+- Per-user paper trades/P&L are already represented in the DB model, but independent trading requires the user-worker scheduler layer.
+
 ## Cloud Paper Summary API
 
 Dashboard/API endpoints:
@@ -224,6 +268,8 @@ Still required:
 
 - Per-user dashboard filtering.
 - Per-user paper engine scheduler.
+- Per-user broker adapter runtime for Zerodha/Dhan/Upstox.
+- Per-user token refresh flows for Zerodha/Dhan/Upstox.
 - User creation/admin UI.
 - PostgreSQL migration for production scale.
 - Redis-based real-time quote/job cache.

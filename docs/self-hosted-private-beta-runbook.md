@@ -209,20 +209,20 @@ If public access shows `Cloudflare Access login is required for this OptionTrade
 
 This runbook makes the current OptionTrader dashboard securely reachable through a protected domain.
 
-It does not yet provide true multi-user paper separation.
+It now has DB-backed user/account separation foundations, per-user strategy settings, and per-user broker profile storage.
+
+It does not yet provide true independent per-user paper workers.
 
 Still needed for full 5-20 user Phase 1A:
 
-- User login inside OptionTrader.
-- Per-user paper accounts.
-- Database instead of `data/paper_state.json`.
-- Per-user strategy selections.
+- Per-user paper engine scheduler/workers.
+- Per-user broker adapter runtime for Zerodha/Dhan/Upstox.
+- Per-user token refresh flows for Zerodha/Dhan/Upstox.
 - Admin dashboard.
-- Central market-data cache.
 - Redis worker queue.
 - Tenant isolation tests.
 
-Until those are built, invited users should be treated as viewers/testers of the same paper system, not separate independent paper accounts.
+Until per-user workers are built, invited users can configure separate accounts/settings/broker profiles, but independent automated paper entries are not fully live for each user.
 
 ## Market Data Reminder
 
@@ -234,6 +234,22 @@ For public/commercial paper users, use:
 
 - Each user's own authorized broker/data account, or
 - A licensed market-data vendor.
+
+## User Broker API Profiles
+
+Each Cloudflare Access user can choose and save a broker profile from the dashboard:
+
+- Zerodha
+- Dhan
+- Upstox
+
+Secrets are encrypted before being stored in the local SQLite DB. The generated local key is runtime state under `data/` and is ignored by Git.
+
+Current limitation:
+
+- Zerodha is the only fully implemented broker path in the current engine.
+- Dhan and Upstox profile selection is available as onboarding/storage foundation.
+- Independent paper trading from each user's broker API requires the next per-user worker and broker-adapter phase.
 
 ## Rollback
 

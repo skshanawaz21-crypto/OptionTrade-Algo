@@ -16,7 +16,25 @@ IST = ZoneInfo("Asia/Kolkata")
 DEFAULT_DB_PATH = Path("data") / "optiontrader.db"
 DEFAULT_USER_EMAIL = "local-owner@optiontrader.local"
 DEFAULT_ACCOUNT_NAME = "Default Paper Account"
-SCHEMA_VERSION = 1
+DEFAULT_SECRET_KEY_NAME = "optiontrader_secret.key"
+SCHEMA_VERSION = 2
+SUPPORTED_BROKERS = {
+    "zerodha": {
+        "label": "Zerodha Kite",
+        "status": "available",
+        "auth_hint": "API key + API secret + daily request/access token flow.",
+    },
+    "dhan": {
+        "label": "Dhan",
+        "status": "adapter_pending",
+        "auth_hint": "Dhan adapter is planned; profile can be saved now.",
+    },
+    "upstox": {
+        "label": "Upstox",
+        "status": "adapter_pending",
+        "auth_hint": "Upstox OAuth adapter is planned; profile can be saved now.",
+    },
+}
 
 
 def now_ist_iso() -> str:
@@ -37,6 +55,15 @@ def db_path_from_env() -> Path:
     return Path(raw) if raw else DEFAULT_DB_PATH
 
 
+def secret_key_path_from_env(db_path: Path | None = None) -> Path:
+    raw = os.getenv("OPTIONTRADER_SECRET_KEY_FILE", "").strip()
+    if raw:
+        return Path(raw)
+    if db_path is not None:
+        return db_path.parent / DEFAULT_SECRET_KEY_NAME
+    return DEFAULT_DB_PATH.parent / DEFAULT_SECRET_KEY_NAME
+
+
 def normalize_email(email: str) -> str:
     return email.strip().lower()
 
@@ -45,6 +72,22 @@ def display_name_from_email(email: str) -> str:
     local_part = normalize_email(email).split("@", 1)[0]
     cleaned = local_part.replace(".", " ").replace("_", " ").replace("-", " ").strip()
     return cleaned.title() if cleaned else "Paper User"
+
+
+def normalize_broker(provider: str) -> str:
+    broker = str(provider or "").strip().lower()
+    if broker not in SUPPORTED_BROKERS:
+        raise ValueError(f"Unsupported broker provider: {provider}")
+    return broker
+
+
+def _mask_secret(value: Any, visible: int = 4) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) <= visible:
+        return "*" * len(text)
+    return f"{text[:visible]}...{text[-2:]}"
 
 
 @dataclass(frozen=True)
@@ -122,6 +165,28 @@ class CloudStateStore:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE(user_id, name)
+            );
+
+            CREATE TABLE IF NOT EXISTS user_broker_profiles (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                paper_account_id TEXT NOT NULL REFERENCES paper_accounts(id) ON DELETE CASCADE,
+                provider TEXT NOT NULL,
+                display_name TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'setup_required',
+                is_active INTEGER NOT NULL DEFAULT 0,
+                masked_api_key TEXT NOT NULL DEFAULT '',
+                masked_client_id TEXT NOT NULL DEFAULT '',
+                public_config_json TEXT NOT NULL DEFAULT '{}',
+                secret_payload TEXT NOT NULL DEFAULT '',
+                token_payload TEXT NOT NULL DEFAULT '',
+                token_status TEXT NOT NULL DEFAULT 'not_configured',
+                token_updated_at TEXT,
+                token_expires_at TEXT,
+                last_error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(user_id, paper_account_id, provider)
             );
 
             CREATE TABLE IF NOT EXISTS strategy_definitions (
@@ -458,6 +523,221 @@ class CloudStateStore:
         with self.session() as conn:
             self._initialize(conn)
             return [dict(row) for row in conn.execute(query, params).fetchall()]
+
+    def supported_brokers(self) -> list[dict[str, Any]]:
+        return [
+            {"provider": provider, **metadata}
+            for provider, metadata in SUPPORTED_BROKERS.items()
+        ]
+
+    def _fernet(self):
+        from cryptography.fernet import Fernet
+
+        raw_key = os.getenv("OPTIONTRADER_SECRET_KEY", "").strip()
+        if raw_key:
+            return Fernet(raw_key.encode("utf-8"))
+
+        key_path = secret_key_path_from_env(self.path)
+        if not key_path.is_absolute():
+            key_path = Path.cwd() / key_path
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        if key_path.exists():
+            key = key_path.read_bytes().strip()
+        else:
+            key = Fernet.generate_key()
+            key_path.write_bytes(key)
+        return Fernet(key)
+
+    def _encrypt_json(self, payload: dict[str, Any]) -> str:
+        clean_payload = {
+            key: value
+            for key, value in payload.items()
+            if value is not None and str(value).strip() != ""
+        }
+        if not clean_payload:
+            return ""
+        return self._fernet().encrypt(json_dumps(clean_payload).encode("utf-8")).decode("utf-8")
+
+    def _decrypt_json(self, encrypted_payload: str) -> dict[str, Any]:
+        encrypted_payload = str(encrypted_payload or "").strip()
+        if not encrypted_payload:
+            return {}
+        try:
+            raw = self._fernet().decrypt(encrypted_payload.encode("utf-8"))
+        except Exception:
+            return {}
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError:
+            return {}
+
+    def get_active_broker_profile(self, context: PaperContext) -> dict[str, Any] | None:
+        with self.session() as conn:
+            self._initialize(conn)
+            row = conn.execute(
+                """
+                SELECT * FROM user_broker_profiles
+                WHERE user_id = ? AND paper_account_id = ? AND is_active = 1
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                (context.user_id, context.paper_account_id),
+            ).fetchone()
+        return self._broker_profile_to_public_dict(row) if row else None
+
+    def list_broker_profiles(self, context: PaperContext) -> list[dict[str, Any]]:
+        with self.session() as conn:
+            self._initialize(conn)
+            rows = conn.execute(
+                """
+                SELECT * FROM user_broker_profiles
+                WHERE user_id = ? AND paper_account_id = ?
+                ORDER BY provider
+                """,
+                (context.user_id, context.paper_account_id),
+            ).fetchall()
+        existing = {str(row["provider"]): self._broker_profile_to_public_dict(row) for row in rows}
+        profiles: list[dict[str, Any]] = []
+        for broker in self.supported_brokers():
+            provider = broker["provider"]
+            row = existing.get(provider)
+            if row:
+                row["label"] = broker["label"]
+                row["adapter_status"] = broker["status"]
+                row["auth_hint"] = broker["auth_hint"]
+                profiles.append(row)
+            else:
+                profiles.append(
+                    {
+                        "provider": provider,
+                        "label": broker["label"],
+                        "adapter_status": broker["status"],
+                        "auth_hint": broker["auth_hint"],
+                        "status": "not_configured",
+                        "is_active": False,
+                        "masked_api_key": "",
+                        "masked_client_id": "",
+                        "token_status": "not_configured",
+                        "token_updated_at": None,
+                        "token_expires_at": None,
+                        "last_error": "",
+                        "configured": False,
+                    }
+                )
+        return profiles
+
+    def set_broker_profile(
+        self,
+        context: PaperContext,
+        *,
+        provider: str,
+        api_key: str = "",
+        api_secret: str = "",
+        access_token: str = "",
+        client_id: str = "",
+        client_secret: str = "",
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        provider = normalize_broker(provider)
+        now = now_ist_iso()
+        public_config = {
+            "provider_label": SUPPORTED_BROKERS[provider]["label"],
+            "adapter_status": SUPPORTED_BROKERS[provider]["status"],
+        }
+        secret_payload = self._encrypt_json(
+            {
+                "api_key": api_key,
+                "api_secret": api_secret,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            }
+        )
+        token_payload = self._encrypt_json({"access_token": access_token})
+        has_credentials = bool(api_key.strip() or client_id.strip() or access_token.strip())
+        status = "configured" if has_credentials else "setup_required"
+        token_status = "present" if access_token.strip() else "not_configured"
+        profile_id = stable_id(
+            "optiontrader-user-broker-profile",
+            context.user_id,
+            context.paper_account_id,
+            provider,
+        )
+        with self.session() as conn:
+            self._initialize(conn)
+            if enabled:
+                conn.execute(
+                    """
+                    UPDATE user_broker_profiles
+                    SET is_active = 0, updated_at = ?
+                    WHERE user_id = ? AND paper_account_id = ?
+                    """,
+                    (now, context.user_id, context.paper_account_id),
+                )
+            conn.execute(
+                """
+                INSERT INTO user_broker_profiles(
+                    id, user_id, paper_account_id, provider, display_name, status, is_active,
+                    masked_api_key, masked_client_id, public_config_json, secret_payload,
+                    token_payload, token_status, token_updated_at, token_expires_at,
+                    last_error, created_at, updated_at
+                )
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '', ?, ?)
+                ON CONFLICT(user_id, paper_account_id, provider) DO UPDATE SET
+                    display_name=excluded.display_name,
+                    status=excluded.status,
+                    is_active=excluded.is_active,
+                    masked_api_key=excluded.masked_api_key,
+                    masked_client_id=excluded.masked_client_id,
+                    public_config_json=excluded.public_config_json,
+                    secret_payload=COALESCE(NULLIF(excluded.secret_payload, ''), user_broker_profiles.secret_payload),
+                    token_payload=COALESCE(NULLIF(excluded.token_payload, ''), user_broker_profiles.token_payload),
+                    token_status=excluded.token_status,
+                    token_updated_at=excluded.token_updated_at,
+                    last_error='',
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    profile_id,
+                    context.user_id,
+                    context.paper_account_id,
+                    provider,
+                    SUPPORTED_BROKERS[provider]["label"],
+                    status,
+                    1 if enabled else 0,
+                    _mask_secret(api_key),
+                    _mask_secret(client_id),
+                    json_dumps(public_config),
+                    secret_payload,
+                    token_payload,
+                    token_status,
+                    now if access_token.strip() else None,
+                    now,
+                    now,
+                ),
+            )
+        return self.broker_summary(context)
+
+    def broker_summary(self, context: PaperContext) -> dict[str, Any]:
+        active = self.get_active_broker_profile(context)
+        profiles = self.list_broker_profiles(context)
+        return {
+            "supported_brokers": self.supported_brokers(),
+            "active_profile": active,
+            "profiles": profiles,
+        }
+
+    @staticmethod
+    def _broker_profile_to_public_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        data = dict(row)
+        data.pop("secret_payload", None)
+        data.pop("token_payload", None)
+        data["is_active"] = bool(data.get("is_active"))
+        data["configured"] = data.get("status") == "configured"
+        try:
+            data["public_config"] = json.loads(data.pop("public_config_json") or "{}")
+        except json.JSONDecodeError:
+            data["public_config"] = {}
+        return data
 
     def list_strategy_settings(self, context: PaperContext) -> list[dict[str, Any]]:
         with self.session() as conn:

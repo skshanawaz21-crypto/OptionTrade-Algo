@@ -10,6 +10,7 @@ data/engine_commands.jsonl
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/*.key
 data/candles/
 data/log_archive/
 data/*.log

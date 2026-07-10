@@ -400,6 +400,40 @@ class EngineSupervisor:
         except Exception:
             return []
 
+    def user_broker_summary(self, headers: Mapping[str, str] | None = None) -> dict[str, Any]:
+        try:
+            return self._cloud_state.broker_summary(self._cloud_context(headers))
+        except Exception as exc:
+            return {
+                "supported_brokers": [],
+                "profiles": [],
+                "active_profile": None,
+                "status": "unavailable",
+                "message": str(exc),
+            }
+
+    def set_user_broker_profile(
+        self,
+        payload: dict[str, Any],
+        headers: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        provider = str(payload.get("provider", "")).strip().lower()
+        if not provider:
+            raise RuntimeError("Please choose Zerodha, Dhan, or Upstox.")
+        try:
+            return self._cloud_state.set_broker_profile(
+                self._cloud_context(headers),
+                provider=provider,
+                api_key=str(payload.get("api_key", "")),
+                api_secret=str(payload.get("api_secret", "")),
+                access_token=str(payload.get("access_token", "")),
+                client_id=str(payload.get("client_id", "")),
+                client_secret=str(payload.get("client_secret", "")),
+                enabled=bool(payload.get("enabled", True)),
+            )
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+
     def set_cloud_strategy_enabled(
         self,
         strategy_slug: str,
@@ -684,6 +718,7 @@ class EngineSupervisor:
                 "completed_paper_trades": completed_trades,
                 "paper_account": paper_account,
                 "cloud_paper": self.cloud_paper_summary(headers),
+                "user_broker": self.user_broker_summary(headers),
                 "signal_quality": signal_quality,
                 "signal_quality_by_period": signal_quality_by_period,
                 "strategy_leaderboard": strategy_leaderboard,
@@ -3499,6 +3534,101 @@ HTML_PAGE = """<!doctype html>
       grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 10px;
     }
+    .broker-choice-shell {
+      position: relative;
+      margin: 12px 0 14px;
+      border: 1px solid #cbd5e1;
+      border-radius: 18px;
+      padding: 14px;
+      background: rgba(255, 255, 255, 0.52);
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+    }
+    .broker-choice-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: flex-start;
+      margin-bottom: 12px;
+    }
+    .broker-choice-title {
+      color: #0f172a;
+      font-weight: 900;
+      font-size: 15px;
+    }
+    .broker-choice-note {
+      color: #475569;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.35;
+      margin-top: 4px;
+    }
+    .broker-status-pill {
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      font-weight: 900;
+      white-space: nowrap;
+      border: 1px solid #99f6e4;
+      background: #ccfbf1;
+      color: #115e59;
+    }
+    .broker-status-pill.pending {
+      border-color: #fcd34d;
+      background: #fef3c7;
+      color: #92400e;
+    }
+    .broker-provider-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .broker-provider-card {
+      border: 1px solid #cbd5e1;
+      border-radius: 15px;
+      padding: 11px;
+      background: #ffffff;
+      cursor: pointer;
+      transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
+    }
+    .broker-provider-card:hover,
+    .broker-provider-card.selected {
+      transform: translateY(-1px);
+      border-color: #0f766e;
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.12);
+    }
+    .broker-provider-name {
+      color: #0f172a;
+      font-weight: 900;
+    }
+    .broker-provider-meta {
+      margin-top: 4px;
+      color: #475569;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.35;
+    }
+    .broker-form-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      align-items: end;
+    }
+    .broker-form-grid label {
+      font-size: 12px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .broker-save-button {
+      border: 0;
+      border-radius: 13px;
+      padding: 12px 14px;
+      cursor: pointer;
+      font-weight: 900 !important;
+      background: #0f766e !important;
+      color: #ffffff !important;
+    }
     .cloud-strategy-card {
       border: 1px solid #cbd5e1;
       border-left: 5px solid #94a3b8;
@@ -3571,7 +3701,9 @@ HTML_PAGE = """<!doctype html>
         display: grid;
       }
       .cloud-summary-grid,
-      .cloud-strategy-grid {
+      .cloud-strategy-grid,
+      .broker-provider-grid,
+      .broker-form-grid {
         grid-template-columns: 1fr;
       }
       .cloud-strategy-hint {
@@ -3611,7 +3743,9 @@ HTML_PAGE = """<!doctype html>
     .active-trade-title,
     .strategy-id,
     .cloud-paper-title h2,
-    .cloud-strategy-name {
+    .cloud-strategy-name,
+    .broker-choice-title,
+    .broker-provider-name {
       color: var(--ink) !important;
     }
     .subtitle,
@@ -3626,6 +3760,8 @@ HTML_PAGE = """<!doctype html>
     .cloud-summary-sub,
     .cloud-strategy-meta,
     .cloud-strategy-hint,
+    .broker-choice-note,
+    .broker-provider-meta,
     label {
       color: var(--muted) !important;
     }
@@ -3637,6 +3773,8 @@ HTML_PAGE = """<!doctype html>
     .strategy-row,
     .cloud-summary-card,
     .cloud-strategy-card,
+    .broker-choice-shell,
+    .broker-provider-card,
     .trade-item {
       background:
         linear-gradient(180deg, rgba(232, 226, 211, 0.96), rgba(211, 204, 187, 0.96)) !important;
@@ -3866,6 +4004,39 @@ HTML_PAGE = """<!doctype html>
             <div class="cloud-summary-value">-</div>
           </div>
         </div>
+        <div id="brokerConnectionPanel" class="broker-choice-shell">
+          <div class="broker-choice-head">
+            <div>
+              <div class="broker-choice-title">Broker Connection</div>
+              <div id="brokerConnectionNote" class="broker-choice-note">Choose the broker API this paper account should use for market data.</div>
+            </div>
+            <span id="brokerConnectionStatus" class="broker-status-pill pending">Not configured</span>
+          </div>
+          <div id="brokerProviderGrid" class="broker-provider-grid"></div>
+          <div class="broker-form-grid">
+            <div>
+              <label for="brokerApiKey">API Key</label>
+              <input id="brokerApiKey" autocomplete="off" placeholder="Optional until adapter setup">
+            </div>
+            <div>
+              <label for="brokerApiSecret">API Secret</label>
+              <input id="brokerApiSecret" autocomplete="off" type="password" placeholder="Stored encrypted locally">
+            </div>
+            <div>
+              <label for="brokerClientId">Client ID</label>
+              <input id="brokerClientId" autocomplete="off" placeholder="Dhan/Upstox if required">
+            </div>
+            <div>
+              <label for="brokerClientSecret">Client Secret</label>
+              <input id="brokerClientSecret" autocomplete="off" type="password" placeholder="If required">
+            </div>
+            <div>
+              <label for="brokerAccessToken">Access Token</label>
+              <input id="brokerAccessToken" autocomplete="off" type="password" placeholder="Optional token/paste flow">
+            </div>
+            <button class="broker-save-button" onclick="saveBrokerProfile()">Save Broker For This Account</button>
+          </div>
+        </div>
         <div class="cloud-strategy-head">
           <strong>Strategy Selection</strong>
           <div id="cloudStrategyHint" class="cloud-strategy-hint">Saved per paper account. Existing open trades are still managed.</div>
@@ -4013,6 +4184,7 @@ HTML_PAGE = """<!doctype html>
     let tokenPanelPinned = false;
     let tokenNeedsRefresh = false;
     let ownerScope = true;
+    let selectedBrokerProvider = "zerodha";
 
     async function api(path, method = "GET", body = null) {
       const response = await fetch(path, {
@@ -4136,6 +4308,7 @@ HTML_PAGE = """<!doctype html>
       document.getElementById("brokerMessage").textContent = broker.message || "";
       renderTokenStatus(data.zerodha_token || {});
       renderCloudPaper(data.cloud_paper || {}, data.strategy_settings || []);
+      renderUserBroker(data.user_broker || {});
       document.getElementById("logPath").textContent = data.log_path ?? "-";
       const logTail = document.getElementById("logTail");
       logTail.textContent = data.log_tail || "No log output yet.";
@@ -4255,6 +4428,79 @@ HTML_PAGE = """<!doctype html>
       try {
         await api("/api/strategy-settings", "POST", {strategy_slug: strategySlug, enabled});
         await refreshStatus();
+      } catch (error) {
+        alert(error.message);
+      }
+    }
+
+    function renderUserBroker(payload) {
+      const grid = document.getElementById("brokerProviderGrid");
+      const status = document.getElementById("brokerConnectionStatus");
+      const note = document.getElementById("brokerConnectionNote");
+      if (!grid || !status || !note) {
+        return;
+      }
+      const profiles = Array.isArray(payload.profiles) ? payload.profiles : [];
+      const active = payload.active_profile || null;
+      if (active && active.provider) {
+        selectedBrokerProvider = active.provider;
+      } else if (!selectedBrokerProvider && profiles.length) {
+        selectedBrokerProvider = profiles[0].provider;
+      }
+      const activeLabel = active ? (active.label || active.display_name || active.provider) : "";
+      const activeConfigured = Boolean(active && active.configured);
+      status.textContent = active
+        ? `${activeLabel} ${activeConfigured ? "Configured" : "Selected"}`
+        : "Choose Broker";
+      status.className = `broker-status-pill ${activeConfigured ? "" : "pending"}`;
+      note.textContent = active
+        ? `This paper account will use ${activeLabel}. Secrets are stored encrypted locally and are never shown back in the dashboard.`
+        : "First-time setup: choose Zerodha, Dhan, or Upstox. The choice is remembered for this paper account.";
+      if (!profiles.length) {
+        grid.innerHTML = `<div class="broker-provider-card"><div class="broker-provider-name">Broker setup unavailable</div><div class="broker-provider-meta">${escapeHtml(payload.message || "No broker profiles returned.")}</div></div>`;
+        return;
+      }
+      grid.innerHTML = profiles.map((profile) => {
+        const selected = profile.provider === selectedBrokerProvider;
+        const adapter = profile.adapter_status === "available" ? "Available" : "Adapter pending";
+        const configured = profile.configured ? "Configured" : "Not configured";
+        const masked = profile.masked_api_key || profile.masked_client_id || "";
+        return `
+          <div class="broker-provider-card ${selected ? "selected" : ""}" onclick='selectBrokerProvider(${JSON.stringify(profile.provider)})'>
+            <div class="broker-provider-name">${escapeHtml(profile.label || profile.provider)}</div>
+            <div class="broker-provider-meta">${adapter} | ${configured}${masked ? " | " + escapeHtml(masked) : ""}</div>
+            <div class="broker-provider-meta">${escapeHtml(profile.auth_hint || "")}</div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function selectBrokerProvider(provider) {
+      selectedBrokerProvider = provider || "zerodha";
+      const cards = document.querySelectorAll(".broker-provider-card");
+      cards.forEach((card) => card.classList.remove("selected"));
+      refreshStatus();
+    }
+
+    async function saveBrokerProfile() {
+      const provider = selectedBrokerProvider || "zerodha";
+      const payload = {
+        provider,
+        api_key: document.getElementById("brokerApiKey")?.value || "",
+        api_secret: document.getElementById("brokerApiSecret")?.value || "",
+        client_id: document.getElementById("brokerClientId")?.value || "",
+        client_secret: document.getElementById("brokerClientSecret")?.value || "",
+        access_token: document.getElementById("brokerAccessToken")?.value || "",
+        enabled: true,
+      };
+      try {
+        await api("/api/user-broker", "POST", payload);
+        ["brokerApiKey", "brokerApiSecret", "brokerClientId", "brokerClientSecret", "brokerAccessToken"].forEach((id) => {
+          const input = document.getElementById(id);
+          if (input) input.value = "";
+        });
+        await refreshStatus();
+        alert("Broker profile saved for this paper account.");
       } catch (error) {
         alert(error.message);
       }
@@ -5259,6 +5505,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/strategy-settings":
             self._respond_json({"strategy_settings": SUPERVISOR.cloud_strategy_settings(self.headers)})
             return
+        if parsed.path == "/api/user-broker":
+            self._respond_json(SUPERVISOR.user_broker_summary(self.headers))
+            return
         if parsed.path == "/api/live-ticks":
             self._respond_json(SUPERVISOR.live_ticks(self.headers))
             return
@@ -5507,6 +5756,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     else bool(enabled_raw)
                 )
                 self._respond_json(SUPERVISOR.set_cloud_strategy_enabled(strategy_slug, enabled, self.headers))
+            except RuntimeError as exc:
+                self._respond_error(HTTPStatus.BAD_REQUEST, str(exc))
+            return
+
+        if parsed.path == "/api/user-broker":
+            try:
+                payload = self._read_json_body()
+                self._respond_json(SUPERVISOR.set_user_broker_profile(payload, self.headers))
             except RuntimeError as exc:
                 self._respond_error(HTTPStatus.BAD_REQUEST, str(exc))
             return

@@ -164,6 +164,57 @@ class CloudStateStoreTests(unittest.TestCase):
             self.assertTrue(owner_settings["index_options_scanner"])
             self.assertFalse(friend_settings["index_options_scanner"])
 
+    def test_user_broker_profile_is_account_scoped_and_hides_secrets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "optiontrader.db"
+            store = CloudStateStore(db_path)
+            owner = store.ensure_user_context(
+                email="owner@example.com",
+                display_name="Owner",
+                account_name="Default Paper Account",
+                capital=500000,
+                role="admin",
+            )
+            friend = store.ensure_user_context(
+                email="friend@example.com",
+                display_name="Friend",
+                account_name="Default Paper Account",
+                capital=250000,
+                role="user",
+            )
+
+            owner_summary = store.set_broker_profile(
+                owner,
+                provider="zerodha",
+                api_key="owner_api_key_123",
+                api_secret="owner_secret_456",
+                access_token="owner_access_token_789",
+            )
+            friend_summary = store.set_broker_profile(
+                friend,
+                provider="dhan",
+                client_id="friend_client_123",
+                client_secret="friend_secret_456",
+            )
+
+            self.assertEqual(owner_summary["active_profile"]["provider"], "zerodha")
+            self.assertEqual(friend_summary["active_profile"]["provider"], "dhan")
+            self.assertNotIn("owner_secret_456", json.dumps(owner_summary))
+            self.assertNotIn("owner_access_token_789", json.dumps(owner_summary))
+            self.assertNotIn("friend_secret_456", json.dumps(friend_summary))
+
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                row = conn.execute(
+                    "SELECT secret_payload, token_payload FROM user_broker_profiles WHERE provider = 'zerodha'"
+                ).fetchone()
+            finally:
+                conn.close()
+            self.assertIsNotNone(row)
+            self.assertNotIn("owner_secret_456", row["secret_payload"])
+            self.assertNotIn("owner_access_token_789", row["token_payload"])
+
 
 if __name__ == "__main__":
     unittest.main()
