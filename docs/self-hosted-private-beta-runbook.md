@@ -93,7 +93,7 @@ OPTIONTRADER_CLOUD_LOCAL_BYPASS=1
 
 The `start_self_hosted_beta.ps1` script sets these when `-CloudAccessGuard` is used.
 
-`OPTIONTRADER_OWNER_EMAILS` is what makes a public/mobile Cloudflare Access browser an owner session. Without it, the public browser is treated as a viewer paper account, so Zerodha token refresh is disabled and the token area shows viewer/shared-feed messaging.
+`OPTIONTRADER_OWNER_EMAILS` is what makes a public/mobile Cloudflare Access browser an owner session. Without it, the public browser is treated as a separate paper account: it can save its own broker profile and Zerodha token, but it cannot control the local owner engine or see owner trades/logs.
 
 Optional launch-time override:
 
@@ -217,7 +217,8 @@ Still needed for full 5-20 user Phase 1A:
 
 - Per-user paper engine scheduler/workers.
 - Per-user broker adapter runtime for Zerodha/Dhan/Upstox.
-- Per-user token refresh flows for Zerodha/Dhan/Upstox.
+- Per-user Zerodha worker execution using the saved encrypted broker profile.
+- Dhan/Upstox token refresh/OAuth flows.
 - Admin dashboard.
 - Redis worker queue.
 - Tenant isolation tests.
@@ -248,6 +249,7 @@ Secrets are encrypted before being stored in the local SQLite DB. The generated 
 Current limitation:
 
 - Zerodha is the only fully implemented broker path in the current engine.
+- Zerodha token login/refresh uses the current user's saved broker profile in the dashboard.
 - Dhan and Upstox profile selection is available as onboarding/storage foundation.
 - Independent paper trading from each user's broker API requires the next per-user worker and broker-adapter phase.
 

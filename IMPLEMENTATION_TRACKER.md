@@ -83,6 +83,7 @@ Status legend:
 | T60 | Apply balanced mid-tone dashboard theme | DONE | T59 | Replaced the bright-light/dark extremes with a warm-slate control-room theme using muted stone backgrounds, parchment panels, readable dark-slate text, and preserved status colors without changing engine or API behavior |
 | T61 | Fix public owner Zerodha token access | DONE | T59 | Added explicit `OPTIONTRADER_OWNER_EMAILS` owner aliases so the owner's Cloudflare/mobile login maps back to the local owner worker, enabling Zerodha token refresh and owner controls while friend sessions remain viewer-only |
 | T62 | Add per-user broker API profile foundation | DONE | T59 | Added DB-backed encrypted broker profile storage, per-user `/api/user-broker` endpoints, dashboard broker selection for Zerodha/Dhan/Upstox, local secret-key handling, docs, and tests while marking Dhan/Upstox runtime adapters as pending |
+| T63 | Use per-user Zerodha profile for token login/refresh | DONE | T62 | Token status and login URL use the logged-in paper account's saved Zerodha API key, token submit stores the encrypted per-account token, non-Zerodha profiles do not show a Zerodha login URL, and viewer token checks no longer call owner broker health |
 
 ## Change Log
 
@@ -145,6 +146,7 @@ Status legend:
 | 2026-07-10 | T60 completed: applied a balanced warm-slate dashboard theme between light and dark mode while preserving all dashboard data bindings, controls, and trading behavior. |
 | 2026-07-10 | T61 completed: fixed public/mobile owner sessions by adding `OPTIONTRADER_OWNER_EMAILS`, mapping owner Cloudflare aliases to the local owner paper worker, clarifying viewer token messaging, and documenting launch/config steps. |
 | 2026-07-10 | T62 completed: added per-user broker API profile foundations with encrypted local storage, remembered broker selection, dashboard setup UI, user-scoped API endpoints, and clear documentation that independent Dhan/Upstox/Zerodha user workers are the next phase. |
+| 2026-07-10 | T63 completed: wired the Zerodha token/login panel to the logged-in user's encrypted broker profile, removed the old shared-feed token status path for viewer sessions, and added regression tests for profile-based Kite login URL generation. |
 
 ## Working Rules
 

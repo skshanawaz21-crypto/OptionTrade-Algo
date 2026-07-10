@@ -169,6 +169,69 @@ class CloudAccessGuardTests(unittest.TestCase):
 
             self.assertEqual(context.user_email, "local-owner@optiontrader.local")
 
+    def test_user_zerodha_token_status_uses_saved_profile_api_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            headers = {
+                "Host": "paper.example.com",
+                "Cf-Access-Authenticated-User-Email": "friend@example.com",
+            }
+            with patch.dict(
+                os.environ,
+                {
+                    "OPTIONTRADER_DB_PATH": str(Path(tmp) / "optiontrader.db"),
+                    "OPTIONTRADER_SECRET_KEY_FILE": str(Path(tmp) / "secret.key"),
+                    "OPTIONTRADER_DEFAULT_USER_EMAIL": "local-owner@optiontrader.local",
+                    "ZERODHA_API_KEY": "wrong_owner_env_key",
+                    "ZERODHA_API_SECRET": "wrong_owner_env_secret",
+                },
+                clear=True,
+            ):
+                supervisor = EngineSupervisor()
+                context = supervisor._cloud_context(headers)
+                supervisor._cloud_state.set_broker_profile(
+                    context,
+                    provider="zerodha",
+                    api_key="profile_key_123",
+                    api_secret="profile_secret_456",
+                )
+
+                token_status = supervisor.zerodha_token_status(headers=headers)
+
+            self.assertEqual(token_status["status"], "required")
+            self.assertIn("profile_key_123", token_status["login_url"])
+            self.assertNotIn("wrong_owner_env_key", token_status["login_url"])
+            self.assertIn("this paper account", token_status["message"])
+
+    def test_user_non_zerodha_profile_does_not_show_zerodha_login_url(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            headers = {
+                "Host": "paper.example.com",
+                "Cf-Access-Authenticated-User-Email": "friend@example.com",
+            }
+            with patch.dict(
+                os.environ,
+                {
+                    "OPTIONTRADER_DB_PATH": str(Path(tmp) / "optiontrader.db"),
+                    "OPTIONTRADER_SECRET_KEY_FILE": str(Path(tmp) / "secret.key"),
+                    "OPTIONTRADER_DEFAULT_USER_EMAIL": "local-owner@optiontrader.local",
+                },
+                clear=True,
+            ):
+                supervisor = EngineSupervisor()
+                context = supervisor._cloud_context(headers)
+                supervisor._cloud_state.set_broker_profile(
+                    context,
+                    provider="dhan",
+                    client_id="dhan_client_id",
+                    client_secret="dhan_secret",
+                )
+
+                token_status = supervisor.zerodha_token_status(headers=headers)
+
+            self.assertEqual(token_status["status"], "not_configured")
+            self.assertEqual(token_status["login_url"], "")
+            self.assertIn("different broker", token_status["message"])
+
 
 if __name__ == "__main__":
     unittest.main()

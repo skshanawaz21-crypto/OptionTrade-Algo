@@ -1,7 +1,7 @@
 # Multi-User Paper DB Runbook
 
 Status: Session-aware compatibility foundation implemented
-Date: 2026-07-09  
+Date: 2026-07-10
 Scope: Self-hosted Phase 1A paper database foundation
 
 ## What Is Implemented
@@ -76,7 +76,7 @@ Important privacy behavior:
 - Non-owner Cloudflare users do not receive owner JSON trade history.
 - Non-owner Cloudflare users do not receive the owner engine log.
 - Non-owner Cloudflare users cannot start/stop/reset the global engine, edit the global watchlist, refresh the owner's Zerodha token, run JSON migration, or manual-exit owner trades.
-- Non-owner Cloudflare users see `Viewer Paper Mode` in the token area because the owner-managed market-data login is intentionally unavailable to them.
+- Non-owner Cloudflare users can save their own broker profile. For Zerodha profiles, the token panel uses that user's saved API key/secret and stores the refreshed token against that user's paper account.
 
 Important architecture note:
 
@@ -111,7 +111,7 @@ OPTIONTRADER_OWNER_EMAILS=your-cloudflare-login-email@example.com
 
 You may also set `OPTIONTRADER_DEFAULT_USER_EMAIL` to the same email, but `OPTIONTRADER_OWNER_EMAILS` is preferred because it lets the local default account remain stable while still granting owner controls to the owner's public/mobile Cloudflare Access session.
 
-If this is not configured, the public/mobile owner browser will be treated as a separate viewer account. In that case Zerodha token refresh will show as unavailable and submitting a token will be blocked.
+If this is not configured, the public/mobile owner browser will be treated as a separate paper user account. It can configure its own broker profile, but it will not control the local owner engine or see the local owner paper trades/logs.
 
 Owner email behavior:
 
@@ -222,6 +222,9 @@ Important:
 
 - Broker API keys/tokens are never sent back to the browser after saving.
 - Dashboard summaries only show masked identifiers.
+- Zerodha login URLs are generated from the current paper account's saved Zerodha API key, not from another user's `.env` settings.
+- Successful Zerodha token refresh stores the access token encrypted in the current paper account's broker profile.
+- Owner/admin sessions also mirror a successful Zerodha refresh into the local compatibility token path and `.env` keys so the current local owner engine keeps working.
 - Current working adapter support is still Zerodha-first in the owner/local engine.
 - Dhan and Upstox profiles can be saved now, but their market-data adapters and per-user worker execution still need to be implemented before they can drive independent paper trading.
 - Per-user paper trades/P&L are already represented in the DB model, but independent trading requires the user-worker scheduler layer.
@@ -250,15 +253,15 @@ market_data_cache
 
 The dashboard's top index ticks are mirrored into this cache as quote snapshots.
 
-This is the first piece of the central market-data architecture:
+This is the first piece of the market-data cache architecture:
 
 ```text
-one data collector -> shared cache -> strategy workers/users
+broker data collector -> quote cache -> strategy workers
 ```
 
 Important:
 
-Caching reduces duplicate API calls. It does not grant market-data redistribution rights.
+Caching reduces duplicate API calls inside the system. It does not grant market-data redistribution rights. The intended external-user direction is per-user broker credentials/workers, not redistributing the owner's paid broker feed.
 
 ## What Is Not Yet Complete
 
@@ -269,7 +272,8 @@ Still required:
 - Per-user dashboard filtering.
 - Per-user paper engine scheduler.
 - Per-user broker adapter runtime for Zerodha/Dhan/Upstox.
-- Per-user token refresh flows for Zerodha/Dhan/Upstox.
+- Per-user Zerodha worker execution using the saved encrypted profile.
+- Dhan/Upstox token/OAuth refresh flows and market-data adapters.
 - User creation/admin UI.
 - PostgreSQL migration for production scale.
 - Redis-based real-time quote/job cache.

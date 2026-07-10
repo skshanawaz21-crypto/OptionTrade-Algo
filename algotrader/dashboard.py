@@ -412,6 +412,47 @@ class EngineSupervisor:
                 "message": str(exc),
             }
 
+    def _user_broker_health_placeholder(self, headers: Mapping[str, str] | None = None) -> dict[str, str]:
+        summary = self.user_broker_summary(headers)
+        active = summary.get("active_profile") if isinstance(summary, dict) else None
+        if not isinstance(active, dict) or not active.get("provider"):
+            return {
+                "status": "not_configured",
+                "label": "BROKER SETUP",
+                "message": "Choose Zerodha, Dhan, or Upstox in Broker Connection for this paper account.",
+            }
+
+        provider = str(active.get("provider") or "").lower()
+        label = str(active.get("label") or active.get("display_name") or provider).upper()
+        configured = bool(active.get("configured"))
+        token_status = str(active.get("token_status") or "not_configured").lower()
+        if provider == "zerodha":
+            if configured and token_status == "present":
+                message = (
+                    "Zerodha token is saved for this paper account. "
+                    "Dedicated per-user paper workers are still pending."
+                )
+            elif configured:
+                message = "Zerodha profile is saved. Refresh the Zerodha token for this paper account."
+            else:
+                message = "Save Zerodha API key and API secret, then refresh the token."
+            return {
+                "status": "user_profile",
+                "label": label or "ZERODHA",
+                "message": message,
+            }
+
+        adapter_status = str(active.get("adapter_status") or "").lower()
+        return {
+            "status": "adapter_pending",
+            "label": label or provider.upper(),
+            "message": (
+                f"{label} profile is saved for this paper account, but its market-data adapter is still pending."
+                if adapter_status != "available"
+                else f"{label} profile is saved for this paper account."
+            ),
+        }
+
     def set_user_broker_profile(
         self,
         payload: dict[str, Any],
@@ -584,12 +625,12 @@ class EngineSupervisor:
         ok = status in {"ok", "fyers_ok", "checking", "fallback"}
         return {
             "status": "active" if ok else "unknown",
-            "label": "Viewer Paper Mode",
-            "button_label": "Viewer Paper Mode",
+            "label": "Paper Account Mode",
+            "button_label": "Paper Account Mode",
             "needs_refresh": False,
             "token_present": False,
             "login_url": "",
-            "message": "Zerodha login is disabled because this browser is not an owner session. Set OPTIONTRADER_OWNER_EMAILS to your Cloudflare Access email to enable token refresh here.",
+            "message": "Save a broker profile in Broker Connection to use this paper account's own API credentials.",
             "updated_at": _now_ist_iso(),
         }
 
@@ -666,8 +707,8 @@ class EngineSupervisor:
                 if identity.get("source") != "local_owner":
                     owner_scope = False
 
-            broker_health = self.broker_health_status(quick=True)
             if owner_scope:
+                broker_health = self.broker_health_status(quick=True)
                 active_trades = self.active_paper_trades(
                     broker_health=broker_health,
                     refresh_quotes=False,
@@ -682,9 +723,10 @@ class EngineSupervisor:
                     "all": signal_quality,
                 }
                 strategy_leaderboard = self.strategy_leaderboard()
-                token_status = self.zerodha_token_status(broker_health=broker_health)
+                token_status = self.zerodha_token_status(headers=headers, broker_health=broker_health)
                 log_tail = self.tail()
             else:
+                broker_health = self._user_broker_health_placeholder(headers)
                 active_trades = self._cloud_active_paper_trades(context) if context else []
                 completed_trades = self._cloud_completed_paper_trades(context) if context else []
                 paper_trades = []
@@ -704,7 +746,7 @@ class EngineSupervisor:
                     "all": signal_quality,
                 }
                 strategy_leaderboard = []
-                token_status = self._shared_feed_token_status(broker_health)
+                token_status = self.zerodha_token_status(headers=headers, broker_health=broker_health)
                 log_tail = (
                     "Owner engine log is hidden for this paper account.\n"
                     "Per-user worker logs will appear after the user-worker scheduler layer is enabled."
@@ -732,8 +774,8 @@ class EngineSupervisor:
 
     def live_ticks(self, headers: Mapping[str, str] | None = None) -> dict[str, Any]:
         with self._lock:
-            broker_health = self.broker_health_status()
             if self.is_owner_request(headers):
+                broker_health = self.broker_health_status()
                 active_trades = self.active_paper_trades(broker_health=broker_health)
             else:
                 try:
@@ -748,29 +790,97 @@ class EngineSupervisor:
                 "active_paper_trades": active_trades,
             }
 
-    def zerodha_token_status(self, broker_health: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _zerodha_auth_profile(self, headers: Mapping[str, str] | None = None) -> dict[str, Any]:
         settings = AppSettings.from_env()
+        try:
+            context = self._cloud_context(headers)
+            active = self._cloud_state.get_active_broker_profile(context)
+            if active and str(active.get("provider", "")).lower() != "zerodha":
+                return {
+                    "source": "user_broker_profile",
+                    "provider": str(active.get("provider", "")),
+                    "provider_label": active.get("label") or active.get("display_name") or active.get("provider"),
+                    "api_key": "",
+                    "api_secret": "",
+                    "access_token": "",
+                    "context": context,
+                }
+            profile = self._cloud_state.get_broker_private_profile(context, "zerodha")
+            if profile and (profile.get("secrets") or profile.get("tokens") or profile.get("is_active")):
+                secrets = profile.get("secrets", {}) if isinstance(profile.get("secrets"), dict) else {}
+                tokens = profile.get("tokens", {}) if isinstance(profile.get("tokens"), dict) else {}
+                return {
+                    "source": "user_broker_profile",
+                    "provider": "zerodha",
+                    "provider_label": profile.get("label") or "Zerodha Kite",
+                    "api_key": str(secrets.get("api_key", "") or ""),
+                    "api_secret": str(secrets.get("api_secret", "") or ""),
+                    "access_token": str(tokens.get("access_token", "") or ""),
+                    "context": context,
+                }
+        except Exception:
+            pass
+
+        if self.is_owner_request(headers):
+            return {
+                "source": "env_owner",
+                "provider": "zerodha",
+                "provider_label": "Zerodha Kite",
+                "api_key": settings.zerodha_api_key,
+                "api_secret": settings.zerodha_api_secret,
+                "access_token": self._current_zerodha_access_token(settings),
+                "context": None,
+            }
+        return {
+            "source": "not_configured",
+            "provider": "",
+            "provider_label": "",
+            "api_key": "",
+            "api_secret": "",
+            "access_token": "",
+            "context": None,
+        }
+
+    def _zerodha_login_url(self, api_key: str) -> str:
         login_url = ""
-        if settings.zerodha_api_key:
+        if api_key:
             try:
-                login_url = KiteConnect(api_key=settings.zerodha_api_key).login_url()
+                login_url = KiteConnect(api_key=api_key).login_url()
             except Exception:
                 login_url = ""
+        return login_url
 
-        token = self._current_zerodha_access_token(settings)
-        token_present = bool(token)
-        if not settings.zerodha_api_key:
+    def zerodha_token_status(
+        self,
+        headers: Mapping[str, str] | None = None,
+        broker_health: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        auth = self._zerodha_auth_profile(headers)
+        if auth.get("provider") and auth.get("provider") != "zerodha":
+            provider_label = str(auth.get("provider_label") or auth.get("provider") or "selected broker")
             return {
                 "status": "not_configured",
-                "label": "Token Setup Needed",
-                "button_label": "Token Setup Needed",
-                "needs_refresh": True,
-                "token_present": token_present,
-                "login_url": login_url,
-                "message": "ZERODHA_API_KEY is missing in .env.",
+                "label": f"{provider_label} Selected",
+                "button_label": f"{provider_label} Selected",
+                "needs_refresh": False,
+                "token_present": False,
+                "login_url": "",
+                "message": "Zerodha login is not used because this account selected a different broker. That adapter is pending.",
                 "updated_at": _now_ist_iso(),
             }
-        if not settings.zerodha_api_secret:
+
+        api_key = str(auth.get("api_key", "") or "").strip()
+        api_secret = str(auth.get("api_secret", "") or "").strip()
+        login_url = self._zerodha_login_url(api_key)
+        token = str(auth.get("access_token", "") or "").strip()
+        token_present = bool(token)
+        source = str(auth.get("source", "not_configured"))
+        profile_message = (
+            "Saved Zerodha broker profile is missing"
+            if source == "user_broker_profile"
+            else "ZERODHA setting is missing"
+        )
+        if not api_key:
             return {
                 "status": "not_configured",
                 "label": "Token Setup Needed",
@@ -778,7 +888,18 @@ class EngineSupervisor:
                 "needs_refresh": True,
                 "token_present": token_present,
                 "login_url": login_url,
-                "message": "ZERODHA_API_SECRET is missing in .env.",
+                "message": f"{profile_message}: API key. Save your Zerodha API key in Broker Connection.",
+                "updated_at": _now_ist_iso(),
+            }
+        if not api_secret:
+            return {
+                "status": "not_configured",
+                "label": "Token Setup Needed",
+                "button_label": "Token Setup Needed",
+                "needs_refresh": True,
+                "token_present": token_present,
+                "login_url": login_url,
+                "message": f"{profile_message}: API secret. Save your Zerodha API secret in Broker Connection.",
                 "updated_at": _now_ist_iso(),
             }
         if not token_present:
@@ -789,7 +910,19 @@ class EngineSupervisor:
                 "needs_refresh": True,
                 "token_present": False,
                 "login_url": login_url,
-                "message": "No Zerodha access token found. Open the login URL and paste the redirected URL here.",
+                "message": "No Zerodha access token found for this paper account. Open the login URL and paste the redirected URL here.",
+                "updated_at": _now_ist_iso(),
+            }
+
+        if source == "user_broker_profile" and not self.is_owner_request(headers):
+            return {
+                "status": "present",
+                "label": "Token Present",
+                "button_label": "Token Present",
+                "needs_refresh": False,
+                "token_present": True,
+                "login_url": login_url,
+                "message": "Zerodha token is saved for this paper account. Per-user quote validation will run after user workers are enabled.",
                 "updated_at": _now_ist_iso(),
             }
 
@@ -851,25 +984,34 @@ class EngineSupervisor:
             "updated_at": _now_ist_iso(),
         }
 
-    def refresh_zerodha_token(self, raw_input: str) -> dict[str, Any]:
+    def refresh_zerodha_token(
+        self,
+        raw_input: str,
+        headers: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
         with self._lock:
             settings = AppSettings.from_env()
-            if not settings.zerodha_api_key or not settings.zerodha_api_secret:
-                raise RuntimeError("ZERODHA_API_KEY and ZERODHA_API_SECRET must be set in .env.")
+            auth = self._zerodha_auth_profile(headers)
+            if auth.get("provider") and auth.get("provider") != "zerodha":
+                raise RuntimeError("Zerodha token refresh is only available when Zerodha is the selected broker.")
+            api_key = str(auth.get("api_key", "") or "").strip()
+            api_secret = str(auth.get("api_secret", "") or "").strip()
+            if not api_key or not api_secret:
+                raise RuntimeError("Save Zerodha API key and API secret in Broker Connection first.")
             request_token = _extract_request_token(raw_input)
-            kite = KiteConnect(api_key=settings.zerodha_api_key)
+            kite = KiteConnect(api_key=api_key)
             try:
                 session = kite.generate_session(
                     request_token,
-                    api_secret=settings.zerodha_api_secret,
+                    api_secret=api_secret,
                 )
             except (InputException, TokenException) as exc:
                 health = self.broker_health_status(quick=False)
-                if health.get("status") == "ok":
+                if self.is_owner_request(headers) and health.get("status") == "ok":
                     return {
                         "ok": True,
                         "engine_restarted": False,
-                        "token_status": self.zerodha_token_status(broker_health=health),
+                        "token_status": self.zerodha_token_status(headers=headers, broker_health=health),
                         "message": (
                             "Zerodha token is already active. The pasted request_token may have "
                             f"already been used: {exc}"
@@ -880,18 +1022,32 @@ class EngineSupervisor:
             if not access_token:
                 raise RuntimeError("Zerodha did not return an access token.")
 
-            token_path = self._zerodha_token_path(settings)
-            token_path.parent.mkdir(parents=True, exist_ok=True)
-            token_path.write_text(access_token, encoding="utf-8")
-            os.environ["ZERODHA_ACCESS_TOKEN"] = access_token
-            self._update_env_value("ZERODHA_ACCESS_TOKEN", access_token)
+            context = auth.get("context")
+            if isinstance(context, PaperContext):
+                self._cloud_state.update_broker_access_token(
+                    context,
+                    provider="zerodha",
+                    access_token=access_token,
+                )
+
+            owner_session = self.is_owner_request(headers)
+            if owner_session:
+                token_path = self._zerodha_token_path(settings)
+                token_path.parent.mkdir(parents=True, exist_ok=True)
+                token_path.write_text(access_token, encoding="utf-8")
+                os.environ["ZERODHA_API_KEY"] = api_key
+                os.environ["ZERODHA_API_SECRET"] = api_secret
+                os.environ["ZERODHA_ACCESS_TOKEN"] = access_token
+                self._update_env_value("ZERODHA_API_KEY", api_key)
+                self._update_env_value("ZERODHA_API_SECRET", api_secret)
+                self._update_env_value("ZERODHA_ACCESS_TOKEN", access_token)
             self._broker_health_cache = None
             self._broker_health_checked_at = None
             self._price_cache.clear()
             self._index_tick_cache = None
 
             engine_restarted = False
-            if self._is_running():
+            if owner_session and self._is_running():
                 config_path = str(self.state.config_path)
                 mode = self.state.mode
                 self.stop()
@@ -907,8 +1063,12 @@ class EngineSupervisor:
                     "button_label": "Token Active",
                     "needs_refresh": False,
                     "token_present": True,
-                    "login_url": KiteConnect(api_key=settings.zerodha_api_key).login_url(),
-                    "message": "Zerodha token refreshed. Broker validation will run at most once per hour.",
+                    "login_url": self._zerodha_login_url(api_key),
+                    "message": (
+                        "Zerodha token refreshed. Owner engine was updated."
+                        if owner_session
+                        else "Zerodha token saved for this paper account."
+                    ),
                     "updated_at": _now_ist_iso(),
                 },
                 "message": "Zerodha access token refreshed successfully.",
@@ -3917,8 +4077,8 @@ HTML_PAGE = """<!doctype html>
       <div class="token-card">
         <button id="tokenStatusButton" class="token-status-button token-unknown" onclick="toggleTokenPanel()">Checking Token...</button>
         <div id="tokenPanel" class="token-panel hidden">
-          <div class="token-panel-title">Zerodha Token Refresh</div>
-          <div id="tokenHelp" class="token-help">Open Zerodha login, complete login, then paste the full redirected URL or only request_token below.</div>
+          <div class="token-panel-title">Broker Token Refresh</div>
+          <div id="tokenHelp" class="token-help">For Zerodha profiles, save your own API key/secret in Broker Connection, open Zerodha login, then paste the redirected URL or request_token below.</div>
           <a id="zerodhaLoginLink" class="token-login-link" href="#" target="_blank" rel="noreferrer">Open Zerodha login URL</a>
           <textarea id="zerodhaTokenInput" placeholder="Paste full redirected URL or request_token here"></textarea>
           <div class="token-actions">
@@ -4249,9 +4409,6 @@ HTML_PAGE = """<!doctype html>
     }
 
     async function submitZerodhaToken() {
-      if (!requireOwnerControl("Zerodha token refresh")) {
-        return;
-      }
       const input = document.getElementById("zerodhaTokenInput");
       const message = document.getElementById("tokenMessage");
       const value = input.value.trim();
@@ -4336,7 +4493,7 @@ HTML_PAGE = """<!doctype html>
         el.classList.toggle("owner-disabled", !ownerScope);
         el.title = ownerScope
           ? ""
-          : "Restricted to the owner account during self-hosted paper beta.";
+          : "Restricted to the owner/admin account.";
       });
     }
 
@@ -4344,7 +4501,7 @@ HTML_PAGE = """<!doctype html>
       if (ownerScope) {
         return true;
       }
-      alert(`${actionLabel} is restricted to the owner account during self-hosted paper beta.`);
+      alert(`${actionLabel} is restricted to the owner/admin account.`);
       return false;
     }
 
@@ -4363,8 +4520,8 @@ HTML_PAGE = """<!doctype html>
       badge.textContent = isOwner ? "Owner Paper Worker" : "Viewer Paper Account";
       badge.className = `cloud-badge ${isOwner ? "" : "viewer"}`;
       note.textContent = isOwner
-        ? "This browser is on the owner account. Engine controls, Zerodha token refresh, global watchlist edits, and JSON migration are available here."
-        : "This browser has its own DB-backed paper account. Owner trades and logs are hidden; per-user strategy choices are saved now, and dedicated user workers are the next layer.";
+        ? "This browser is on the owner account. Engine controls, global watchlist edits, JSON migration, and the local owner paper worker are available here."
+        : "This browser has its own DB-backed paper account, broker profile, and strategy choices. Owner trades and logs are hidden; dedicated user workers are the next layer.";
 
       summary.innerHTML = `
         <div class="cloud-summary-card">
@@ -4392,7 +4549,7 @@ HTML_PAGE = """<!doctype html>
       const rows = Array.isArray(settings) ? settings : [];
       hint.textContent = isOwner
         ? "Owner toggles affect new entries after the engine settings cache refreshes. Open trades remain managed."
-        : "Viewer toggles are saved to this paper account and will drive entries when the per-user worker layer is enabled.";
+        : "These toggles are saved to this paper account and will drive entries when the per-user worker layer is enabled.";
       if (!rows.length) {
         strategies.innerHTML = `
           <div class="cloud-summary-card">
@@ -5512,10 +5669,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._respond_json(SUPERVISOR.live_ticks(self.headers))
             return
         if parsed.path == "/api/token-status":
-            if SUPERVISOR.is_owner_request(self.headers):
-                self._respond_json(SUPERVISOR.zerodha_token_status(SUPERVISOR.broker_health_status()))
-            else:
-                self._respond_json(SUPERVISOR._shared_feed_token_status(SUPERVISOR.broker_health_status()))
+            broker_health = (
+                SUPERVISOR.broker_health_status()
+                if SUPERVISOR.is_owner_request(self.headers)
+                else None
+            )
+            self._respond_json(
+                SUPERVISOR.zerodha_token_status(
+                    headers=self.headers,
+                    broker_health=broker_health,
+                )
+            )
             return
         if parsed.path == "/api/signal-quality":
             query = parse_qs(parsed.query)
@@ -5807,12 +5971,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/zerodha-token":
-            if self._owner_control_blocked():
-                return
             try:
                 payload = self._read_json_body()
                 raw_input = str(payload.get("token_input", payload.get("request_token", "")))
-                self._respond_json(SUPERVISOR.refresh_zerodha_token(raw_input))
+                self._respond_json(SUPERVISOR.refresh_zerodha_token(raw_input, self.headers))
             except (RuntimeError, ValueError, InputException, TokenException) as exc:
                 self._respond_error(HTTPStatus.BAD_REQUEST, str(exc))
             return
@@ -5874,7 +6036,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return False
         self._respond_error(
             HTTPStatus.FORBIDDEN,
-            "This control is restricted to the owner account in self-hosted paper beta mode.",
+            "This control is restricted to the owner/admin account.",
         )
         return True
 

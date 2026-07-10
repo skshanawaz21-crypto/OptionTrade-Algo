@@ -585,6 +585,24 @@ class CloudStateStore:
             ).fetchone()
         return self._broker_profile_to_public_dict(row) if row else None
 
+    def get_broker_private_profile(self, context: PaperContext, provider: str) -> dict[str, Any] | None:
+        provider = normalize_broker(provider)
+        with self.session() as conn:
+            self._initialize(conn)
+            row = conn.execute(
+                """
+                SELECT * FROM user_broker_profiles
+                WHERE user_id = ? AND paper_account_id = ? AND provider = ?
+                """,
+                (context.user_id, context.paper_account_id, provider),
+            ).fetchone()
+        if not row:
+            return None
+        data = self._broker_profile_to_public_dict(row)
+        data["secrets"] = self._decrypt_json(row["secret_payload"])
+        data["tokens"] = self._decrypt_json(row["token_payload"])
+        return data
+
     def list_broker_profiles(self, context: PaperContext) -> list[dict[str, Any]]:
         with self.session() as conn:
             self._initialize(conn)
@@ -640,22 +658,15 @@ class CloudStateStore:
     ) -> dict[str, Any]:
         provider = normalize_broker(provider)
         now = now_ist_iso()
+        api_key = str(api_key or "").strip()
+        api_secret = str(api_secret or "").strip()
+        access_token = str(access_token or "").strip()
+        client_id = str(client_id or "").strip()
+        client_secret = str(client_secret or "").strip()
         public_config = {
             "provider_label": SUPPORTED_BROKERS[provider]["label"],
             "adapter_status": SUPPORTED_BROKERS[provider]["status"],
         }
-        secret_payload = self._encrypt_json(
-            {
-                "api_key": api_key,
-                "api_secret": api_secret,
-                "client_id": client_id,
-                "client_secret": client_secret,
-            }
-        )
-        token_payload = self._encrypt_json({"access_token": access_token})
-        has_credentials = bool(api_key.strip() or client_id.strip() or access_token.strip())
-        status = "configured" if has_credentials else "setup_required"
-        token_status = "present" if access_token.strip() else "not_configured"
         profile_id = stable_id(
             "optiontrader-user-broker-profile",
             context.user_id,
@@ -664,6 +675,53 @@ class CloudStateStore:
         )
         with self.session() as conn:
             self._initialize(conn)
+            existing = conn.execute(
+                """
+                SELECT * FROM user_broker_profiles
+                WHERE user_id = ? AND paper_account_id = ? AND provider = ?
+                """,
+                (context.user_id, context.paper_account_id, provider),
+            ).fetchone()
+            existing_secrets = self._decrypt_json(existing["secret_payload"]) if existing else {}
+            supplied_secrets = {
+                key: value
+                for key, value in {
+                    "api_key": api_key,
+                    "api_secret": api_secret,
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                }.items()
+                if value
+            }
+            merged_secrets = {**existing_secrets, **supplied_secrets}
+            secret_payload = self._encrypt_json(merged_secrets)
+            credentials_supplied = bool(supplied_secrets)
+            token_supplied = bool(access_token)
+            if token_supplied:
+                token_payload = self._encrypt_json({"access_token": access_token})
+                token_status = "present"
+                token_updated_at = now
+                token_expires_at = existing["token_expires_at"] if existing else None
+            elif credentials_supplied:
+                # New API credentials invalidate any token generated for older credentials.
+                token_payload = ""
+                token_status = "not_configured"
+                token_updated_at = None
+                token_expires_at = None
+            elif existing:
+                token_payload = str(existing["token_payload"] or "")
+                token_status = str(existing["token_status"] or "not_configured")
+                token_updated_at = existing["token_updated_at"]
+                token_expires_at = existing["token_expires_at"]
+            else:
+                token_payload = ""
+                token_status = "not_configured"
+                token_updated_at = None
+                token_expires_at = None
+
+            status = "configured" if (merged_secrets or token_payload) else "setup_required"
+            masked_api_key = _mask_secret(merged_secrets.get("api_key"))
+            masked_client_id = _mask_secret(merged_secrets.get("client_id"))
             if enabled:
                 conn.execute(
                     """
@@ -681,7 +739,7 @@ class CloudStateStore:
                     token_payload, token_status, token_updated_at, token_expires_at,
                     last_error, created_at, updated_at
                 )
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '', ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
                 ON CONFLICT(user_id, paper_account_id, provider) DO UPDATE SET
                     display_name=excluded.display_name,
                     status=excluded.status,
@@ -689,10 +747,11 @@ class CloudStateStore:
                     masked_api_key=excluded.masked_api_key,
                     masked_client_id=excluded.masked_client_id,
                     public_config_json=excluded.public_config_json,
-                    secret_payload=COALESCE(NULLIF(excluded.secret_payload, ''), user_broker_profiles.secret_payload),
-                    token_payload=COALESCE(NULLIF(excluded.token_payload, ''), user_broker_profiles.token_payload),
+                    secret_payload=excluded.secret_payload,
+                    token_payload=excluded.token_payload,
                     token_status=excluded.token_status,
                     token_updated_at=excluded.token_updated_at,
+                    token_expires_at=excluded.token_expires_at,
                     last_error='',
                     updated_at=excluded.updated_at
                 """,
@@ -704,17 +763,59 @@ class CloudStateStore:
                     SUPPORTED_BROKERS[provider]["label"],
                     status,
                     1 if enabled else 0,
-                    _mask_secret(api_key),
-                    _mask_secret(client_id),
+                    masked_api_key,
+                    masked_client_id,
                     json_dumps(public_config),
                     secret_payload,
                     token_payload,
                     token_status,
-                    now if access_token.strip() else None,
+                    token_updated_at,
+                    token_expires_at,
                     now,
                     now,
                 ),
             )
+        return self.broker_summary(context)
+
+    def update_broker_access_token(
+        self,
+        context: PaperContext,
+        *,
+        provider: str,
+        access_token: str,
+        token_expires_at: str | None = None,
+    ) -> dict[str, Any]:
+        provider = normalize_broker(provider)
+        access_token = str(access_token or "").strip()
+        if not access_token:
+            raise ValueError("access_token is required.")
+        now = now_ist_iso()
+        token_payload = self._encrypt_json({"access_token": access_token})
+        with self.session() as conn:
+            self._initialize(conn)
+            result = conn.execute(
+                """
+                UPDATE user_broker_profiles
+                SET token_payload = ?,
+                    token_status = 'present',
+                    token_updated_at = ?,
+                    token_expires_at = ?,
+                    last_error = '',
+                    updated_at = ?
+                WHERE user_id = ? AND paper_account_id = ? AND provider = ?
+                """,
+                (
+                    token_payload,
+                    now,
+                    token_expires_at,
+                    now,
+                    context.user_id,
+                    context.paper_account_id,
+                    provider,
+                ),
+            )
+            if result.rowcount == 0:
+                raise KeyError(f"Broker profile not found: {provider}")
         return self.broker_summary(context)
 
     def broker_summary(self, context: PaperContext) -> dict[str, Any]:

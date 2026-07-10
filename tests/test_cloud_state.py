@@ -215,6 +215,37 @@ class CloudStateStoreTests(unittest.TestCase):
             self.assertNotIn("owner_secret_456", row["secret_payload"])
             self.assertNotIn("owner_access_token_789", row["token_payload"])
 
+            private_profile = store.get_broker_private_profile(owner, "zerodha")
+            self.assertEqual(private_profile["secrets"]["api_key"], "owner_api_key_123")
+            self.assertEqual(private_profile["tokens"]["access_token"], "owner_access_token_789")
+
+            store.update_broker_access_token(
+                owner,
+                provider="zerodha",
+                access_token="new_owner_access_token",
+            )
+            updated_profile = store.get_broker_private_profile(owner, "zerodha")
+            public_summary = store.broker_summary(owner)
+            self.assertEqual(updated_profile["tokens"]["access_token"], "new_owner_access_token")
+            self.assertNotIn("new_owner_access_token", json.dumps(public_summary))
+
+            preserved_summary = store.set_broker_profile(owner, provider="zerodha")
+            preserved_profile = store.get_broker_private_profile(owner, "zerodha")
+            self.assertTrue(preserved_summary["active_profile"]["configured"])
+            self.assertEqual(preserved_summary["active_profile"]["token_status"], "present")
+            self.assertEqual(preserved_profile["tokens"]["access_token"], "new_owner_access_token")
+
+            rotated_summary = store.set_broker_profile(
+                owner,
+                provider="zerodha",
+                api_key="rotated_api_key_999",
+                api_secret="rotated_secret_888",
+            )
+            rotated_profile = store.get_broker_private_profile(owner, "zerodha")
+            self.assertEqual(rotated_profile["secrets"]["api_key"], "rotated_api_key_999")
+            self.assertEqual(rotated_profile["tokens"], {})
+            self.assertEqual(rotated_summary["active_profile"]["token_status"], "not_configured")
+
 
 if __name__ == "__main__":
     unittest.main()
