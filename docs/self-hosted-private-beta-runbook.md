@@ -93,7 +93,7 @@ OPTIONTRADER_CLOUD_LOCAL_BYPASS=1
 
 The `start_self_hosted_beta.ps1` script sets these when `-CloudAccessGuard` is used.
 
-`OPTIONTRADER_OWNER_EMAILS` is what makes a public/mobile Cloudflare Access browser an owner session. Without it, the public browser is treated as a separate paper account: it can save its own broker profile and Zerodha token, but it cannot control the local owner engine or see owner trades/logs.
+`OPTIONTRADER_OWNER_EMAILS` is what makes a public/mobile Cloudflare Access browser an owner session. Without a Cloudflare Access email header, a public hostname is treated as an unauthenticated guest: it cannot control the local owner engine, cannot see owner trades/logs, cannot save broker API credentials, and cannot use the owner's `.env` Zerodha key.
 
 Optional launch-time override:
 
@@ -245,6 +245,11 @@ Each Cloudflare Access user can choose and save a broker profile from the dashbo
 - Upstox
 
 Secrets are encrypted before being stored in the local SQLite DB. The generated local key is runtime state under `data/` and is ignored by Git.
+
+Public broker setup requires a stable browser identity. Use one of these paths:
+
+- Local owner setup at `http://127.0.0.1:8877/`.
+- Public/mobile setup through Cloudflare Access so `Cf-Access-Authenticated-User-Email` is present.
 
 Current limitation:
 

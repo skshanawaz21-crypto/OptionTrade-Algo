@@ -77,6 +77,7 @@ Important privacy behavior:
 - Non-owner Cloudflare users do not receive the owner engine log.
 - Non-owner Cloudflare users cannot start/stop/reset the global engine, edit the global watchlist, refresh the owner's Zerodha token, run JSON migration, or manual-exit owner trades.
 - Non-owner Cloudflare users can save their own broker profile. For Zerodha profiles, the token panel uses that user's saved API key/secret and stores the refreshed token against that user's paper account.
+- Public-host requests without a Cloudflare Access email are treated as unauthenticated guests. They cannot save broker API credentials and cannot use the owner/local `.env` Zerodha key.
 
 Important architecture note:
 
@@ -112,6 +113,8 @@ OPTIONTRADER_OWNER_EMAILS=your-cloudflare-login-email@example.com
 You may also set `OPTIONTRADER_DEFAULT_USER_EMAIL` to the same email, but `OPTIONTRADER_OWNER_EMAILS` is preferred because it lets the local default account remain stable while still granting owner controls to the owner's public/mobile Cloudflare Access session.
 
 If this is not configured, the public/mobile owner browser will be treated as a separate paper user account. It can configure its own broker profile, but it will not control the local owner engine or see the local owner paper trades/logs.
+
+If Cloudflare Access itself is not active for the public hostname, the browser has no stable per-user email identity. In that state, broker credential setup is blocked for safety. Use local `http://127.0.0.1:8877/` or enable Cloudflare Access before saving broker API keys from the public/mobile dashboard.
 
 Owner email behavior:
 
@@ -225,6 +228,7 @@ Important:
 - Zerodha login URLs are generated from the current paper account's saved Zerodha API key, not from another user's `.env` settings.
 - Successful Zerodha token refresh stores the access token encrypted in the current paper account's broker profile.
 - Owner/admin sessions also mirror a successful Zerodha refresh into the local compatibility token path and `.env` keys so the current local owner engine keeps working.
+- Public unauthenticated sessions do not use owner `.env` credentials and do not generate Zerodha login URLs.
 - Current working adapter support is still Zerodha-first in the owner/local engine.
 - Dhan and Upstox profiles can be saved now, but their market-data adapters and per-user worker execution still need to be implemented before they can drive independent paper trading.
 - Per-user paper trades/P&L are already represented in the DB model, but independent trading requires the user-worker scheduler layer.

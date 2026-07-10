@@ -99,6 +99,17 @@ class CloudAccessGuardTests(unittest.TestCase):
         self.assertEqual(identity["email"], "owner@example.com")
         self.assertEqual(identity["source"], "local_owner")
 
+    def test_public_host_without_cloudflare_email_is_not_owner_identity(self):
+        with patch.dict(
+            os.environ,
+            {"OPTIONTRADER_DEFAULT_USER_EMAIL": "owner@example.com"},
+            clear=True,
+        ):
+            identity = _request_cloud_identity({"Host": "bot.example.com"})
+
+        self.assertEqual(identity["email"], "public-guest@optiontrader.local")
+        self.assertEqual(identity["source"], "public_unauthenticated")
+
     def test_owner_emails_include_default_and_explicit_cloud_owners(self):
         with patch.dict(
             os.environ,
@@ -168,6 +179,52 @@ class CloudAccessGuardTests(unittest.TestCase):
                 )
 
             self.assertEqual(context.user_email, "local-owner@optiontrader.local")
+
+    def test_public_host_without_cloudflare_email_does_not_use_env_token_login(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            headers = {"Host": "bot.example.com"}
+            with patch.dict(
+                os.environ,
+                {
+                    "OPTIONTRADER_DB_PATH": str(Path(tmp) / "optiontrader.db"),
+                    "OPTIONTRADER_SECRET_KEY_FILE": str(Path(tmp) / "secret.key"),
+                    "OPTIONTRADER_DEFAULT_USER_EMAIL": "local-owner@optiontrader.local",
+                    "ZERODHA_API_KEY": "owner_env_key_should_not_be_used",
+                    "ZERODHA_API_SECRET": "owner_env_secret_should_not_be_used",
+                },
+                clear=True,
+            ):
+                supervisor = EngineSupervisor()
+                token_status = supervisor.zerodha_token_status(headers=headers)
+
+            self.assertEqual(token_status["status"], "not_configured")
+            self.assertEqual(token_status["login_url"], "")
+            self.assertIn("Cloudflare Access login is required", token_status["message"])
+
+    def test_public_host_without_cloudflare_email_cannot_save_broker_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            headers = {"Host": "bot.example.com"}
+            with patch.dict(
+                os.environ,
+                {
+                    "OPTIONTRADER_DB_PATH": str(Path(tmp) / "optiontrader.db"),
+                    "OPTIONTRADER_SECRET_KEY_FILE": str(Path(tmp) / "secret.key"),
+                    "OPTIONTRADER_DEFAULT_USER_EMAIL": "local-owner@optiontrader.local",
+                },
+                clear=True,
+            ):
+                supervisor = EngineSupervisor()
+                with self.assertRaises(RuntimeError) as ctx:
+                    supervisor.set_user_broker_profile(
+                        {
+                            "provider": "zerodha",
+                            "api_key": "profile_key",
+                            "api_secret": "profile_secret",
+                        },
+                        headers,
+                    )
+
+            self.assertIn("Cloudflare Access login is required", str(ctx.exception))
 
     def test_user_zerodha_token_status_uses_saved_profile_api_key(self):
         with tempfile.TemporaryDirectory() as tmp:

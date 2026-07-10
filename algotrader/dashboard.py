@@ -174,6 +174,12 @@ def _host_is_local(host: str) -> bool:
     return hostname in {"127.0.0.1", "localhost"}
 
 
+def _has_cloudflare_identity(headers: Mapping[str, str] | None) -> bool:
+    if headers is None:
+        return False
+    return bool(normalize_email(headers.get("Cf-Access-Authenticated-User-Email", "")))
+
+
 def _cloud_access_auth_error(headers: Mapping[str, str]) -> str | None:
     if not _env_truthy(os.getenv("OPTIONTRADER_CLOUD_ACCESS_REQUIRED")):
         return None
@@ -212,11 +218,18 @@ def _request_cloud_identity(headers: Mapping[str, str] | None) -> dict[str, str]
     if headers is None:
         return _default_cloud_identity()
     email = normalize_email(headers.get("Cf-Access-Authenticated-User-Email", ""))
-    if email:
+    if _has_cloudflare_identity(headers):
         return {
             "email": email,
             "display_name": display_name_from_email(email),
             "source": "cloudflare_access",
+        }
+    host = str(headers.get("Host", "") or "")
+    if host and not _host_is_local(host):
+        return {
+            "email": "public-guest@optiontrader.local",
+            "display_name": "Public Guest",
+            "source": "public_unauthenticated",
         }
     return _default_cloud_identity()
 
@@ -458,6 +471,12 @@ class EngineSupervisor:
         payload: dict[str, Any],
         headers: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
+        identity = _request_cloud_identity(headers)
+        if identity.get("source") == "public_unauthenticated":
+            raise RuntimeError(
+                "Cloudflare Access login is required before saving broker API credentials from the public dashboard. "
+                "Use http://127.0.0.1:8877 locally or start the self-hosted dashboard with Cloudflare Access enabled."
+            )
         provider = str(payload.get("provider", "")).strip().lower()
         if not provider:
             raise RuntimeError("Please choose Zerodha, Dhan, or Upstox.")
@@ -792,6 +811,17 @@ class EngineSupervisor:
 
     def _zerodha_auth_profile(self, headers: Mapping[str, str] | None = None) -> dict[str, Any]:
         settings = AppSettings.from_env()
+        identity = _request_cloud_identity(headers)
+        if identity.get("source") == "public_unauthenticated":
+            return {
+                "source": "public_unauthenticated",
+                "provider": "zerodha",
+                "provider_label": "Zerodha Kite",
+                "api_key": "",
+                "api_secret": "",
+                "access_token": "",
+                "context": None,
+            }
         try:
             context = self._cloud_context(headers)
             active = self._cloud_state.get_active_broker_profile(context)
@@ -878,6 +908,8 @@ class EngineSupervisor:
         profile_message = (
             "Saved Zerodha broker profile is missing"
             if source == "user_broker_profile"
+            else "Cloudflare Access login is required before public broker setup"
+            if source == "public_unauthenticated"
             else "ZERODHA setting is missing"
         )
         if not api_key:
@@ -888,7 +920,12 @@ class EngineSupervisor:
                 "needs_refresh": True,
                 "token_present": token_present,
                 "login_url": login_url,
-                "message": f"{profile_message}: API key. Save your Zerodha API key in Broker Connection.",
+                "message": (
+                    "Cloudflare Access login is required before saving or using broker API credentials from the public dashboard. "
+                    "Use http://127.0.0.1:8877 locally, or restart self-hosted mode with Cloudflare Access enabled."
+                    if source == "public_unauthenticated"
+                    else f"{profile_message}: API key. Save your Zerodha API key in Broker Connection."
+                ),
                 "updated_at": _now_ist_iso(),
             }
         if not api_secret:
