@@ -62,6 +62,10 @@ $escapedPythonExe = $pythonExe.Replace("'", "''")
 $escapedDashboardScript = $dashboardScript.Replace("'", "''")
 $escapedAllowedEmails = $AllowedEmails.Replace("'", "''")
 $escapedOwnerEmails = $OwnerEmails.Replace("'", "''")
+$allowedEmailsCommand = ""
+if ($AllowedEmails) {
+    $allowedEmailsCommand = "`$env:OPTIONTRADER_CLOUD_ALLOWED_EMAILS = '$escapedAllowedEmails'`n"
+}
 $ownerEmailsCommand = ""
 if ($OwnerEmails) {
     $ownerEmailsCommand = "`$env:OPTIONTRADER_OWNER_EMAILS = '$escapedOwnerEmails'`n"
@@ -78,8 +82,7 @@ if (Test-DashboardReady) {
 } else {
     $dashboardCommand = @"
 `$env:OPTIONTRADER_CLOUD_ACCESS_REQUIRED = '$accessRequired'
-`$env:OPTIONTRADER_CLOUD_ALLOWED_EMAILS = '$escapedAllowedEmails'
-$ownerEmailsCommand`$env:OPTIONTRADER_CLOUD_LOCAL_BYPASS = '1'
+$allowedEmailsCommand$ownerEmailsCommand`$env:OPTIONTRADER_CLOUD_LOCAL_BYPASS = '1'
 Set-Location -LiteralPath '$escapedProjectRoot'
 & '$escapedPythonExe' '$escapedDashboardScript'
 "@
@@ -118,7 +121,7 @@ if ($CloudAccessGuard) {
     if ($AllowedEmails) {
         Write-Host "App-level email allowlist: $AllowedEmails"
     } else {
-        Write-Host "App-level email allowlist: not set; Cloudflare Access policy must restrict users."
+        Write-Host "App-level email allowlist: from .env OPTIONTRADER_CLOUD_ALLOWED_EMAILS, or unset if absent."
     }
     if ($OwnerEmails) {
         Write-Host "Owner email(s): $OwnerEmails"

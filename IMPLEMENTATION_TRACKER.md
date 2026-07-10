@@ -85,6 +85,7 @@ Status legend:
 | T62 | Add per-user broker API profile foundation | DONE | T59 | Added DB-backed encrypted broker profile storage, per-user `/api/user-broker` endpoints, dashboard broker selection for Zerodha/Dhan/Upstox, local secret-key handling, docs, and tests while marking Dhan/Upstox runtime adapters as pending |
 | T63 | Use per-user Zerodha profile for token login/refresh | DONE | T62 | Token status and login URL use the logged-in paper account's saved Zerodha API key, token submit stores the encrypted per-account token, non-Zerodha profiles do not show a Zerodha login URL, and viewer token checks no longer call owner broker health |
 | T64 | Block unauthenticated public host from owner broker fallback | DONE | T63 | Public hostname requests without a Cloudflare Access email no longer resolve as owner, cannot save broker credentials, and cannot generate Zerodha login URLs from owner `.env` API keys |
+| T65 | Preserve `.env` app allowlist in self-hosted launcher | DONE | T64 | Self-hosted launcher no longer overwrites `OPTIONTRADER_CLOUD_ALLOWED_EMAILS` with blank when `-AllowedEmails` is omitted, allowing local `.env` invite lists to remain effective |
 
 ## Change Log
 
@@ -149,6 +150,7 @@ Status legend:
 | 2026-07-10 | T62 completed: added per-user broker API profile foundations with encrypted local storage, remembered broker selection, dashboard setup UI, user-scoped API endpoints, and clear documentation that independent Dhan/Upstox/Zerodha user workers are the next phase. |
 | 2026-07-10 | T63 completed: wired the Zerodha token/login panel to the logged-in user's encrypted broker profile, removed the old shared-feed token status path for viewer sessions, and added regression tests for profile-based Kite login URL generation. |
 | 2026-07-10 | T64 completed: stopped unauthenticated public-host requests from falling back to the local owner account or owner `.env` Zerodha key, and added regression coverage for the safer Cloudflare Access-required public broker setup path. |
+| 2026-07-10 | T65 completed: added the requested friend email to the local app-level `.env` allowlist and fixed the self-hosted launcher so omitted `-AllowedEmails` values no longer blank out `.env` allowlists. |
 
 ## Working Rules
 

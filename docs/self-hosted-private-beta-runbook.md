@@ -103,6 +103,14 @@ Optional launch-time override:
 
 If `-OwnerEmails` is omitted, the dashboard uses `.env` values instead.
 
+If `-AllowedEmails` is omitted, the dashboard can use `.env`:
+
+```text
+OPTIONTRADER_CLOUD_ALLOWED_EMAILS=you@example.com,friend1@example.com
+```
+
+This app-level allowlist is separate from the Cloudflare Zero Trust Access policy. The Cloudflare policy must also include the invited email or Cloudflare will not complete the OTP login.
+
 ## One-Time Cloudflare Setup
 
 These steps require your Cloudflare account/domain access.
