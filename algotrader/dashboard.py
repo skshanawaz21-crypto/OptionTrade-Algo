@@ -3556,6 +3556,195 @@ HTML_PAGE = """<!doctype html>
         text-align: left;
       }
     }
+    /* Balanced warm-slate theme: between bright light and full dark mode. */
+    :root {
+      --bg: #aaa79a !important;
+      --bg-elev: #d8d2c1 !important;
+      --panel: #e2dccb !important;
+      --panel-2: #cdc6b5 !important;
+      --ink: #17252b !important;
+      --muted: #4b5b61 !important;
+      --border: #958c78 !important;
+      --accent: #0b6f68 !important;
+      --accent-2: #a15d16 !important;
+      --danger: #a92727 !important;
+      --glow: 0 14px 32px rgba(39, 48, 50, 0.20) !important;
+    }
+    body {
+      background:
+        radial-gradient(900px 460px at 7% -8%, rgba(11, 111, 104, 0.22), transparent 58%),
+        radial-gradient(760px 420px at 95% 0%, rgba(161, 93, 22, 0.20), transparent 56%),
+        linear-gradient(135deg, #8f968e 0%, #b4ad9c 42%, #cbc1aa 100%) !important;
+      color: var(--ink) !important;
+    }
+    body::before {
+      background-image:
+        linear-gradient(rgba(23, 37, 43, 0.07) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(23, 37, 43, 0.055) 1px, transparent 1px) !important;
+      opacity: 0.32 !important;
+    }
+    h1, h2,
+    .panel h2,
+    .scanner-index-title,
+    .active-trade-title,
+    .strategy-id,
+    .cloud-paper-title h2,
+    .cloud-strategy-name {
+      color: var(--ink) !important;
+    }
+    .subtitle,
+    .subnote,
+    .metric-sub,
+    .trade-time,
+    .meta,
+    .trade-page,
+    .scanner-index-sub,
+    .scanner-reason,
+    .cloud-paper-note,
+    .cloud-summary-sub,
+    .cloud-strategy-meta,
+    .cloud-strategy-hint,
+    label {
+      color: var(--muted) !important;
+    }
+    .panel,
+    .metric-card,
+    .progress-card,
+    .signal-pill,
+    .scanner-index-card,
+    .strategy-row,
+    .cloud-summary-card,
+    .cloud-strategy-card,
+    .trade-item {
+      background:
+        linear-gradient(180deg, rgba(232, 226, 211, 0.96), rgba(211, 204, 187, 0.96)) !important;
+      border-color: var(--border) !important;
+      color: var(--ink) !important;
+      box-shadow: var(--glow) !important;
+    }
+    .metric-card.good,
+    .cloud-strategy-card.enabled {
+      background: linear-gradient(180deg, rgba(218, 232, 218, 0.98), rgba(190, 215, 203, 0.98)) !important;
+      border-color: #6f9f8e !important;
+    }
+    .metric-card.bad,
+    .cloud-strategy-card.disabled {
+      background: linear-gradient(180deg, rgba(232, 215, 207, 0.98), rgba(213, 189, 181, 0.98)) !important;
+      border-color: #b17a70 !important;
+    }
+    .metric-card.neutral {
+      background: linear-gradient(180deg, rgba(236, 224, 197, 0.98), rgba(213, 200, 174, 0.98)) !important;
+      border-color: #b49b66 !important;
+    }
+    .index-tile {
+      background:
+        linear-gradient(180deg, rgba(204, 220, 207, 0.96), rgba(181, 202, 192, 0.96)) !important;
+      border-color: #78a698 !important;
+    }
+    .index-value,
+    .metric-value,
+    .scanner-mini-value,
+    .cloud-summary-value,
+    .underlying-price {
+      color: #102026 !important;
+    }
+    .index-label,
+    .index-meta,
+    .metric-label,
+    .scanner-mini-label,
+    .cloud-summary-label,
+    .underlying-title {
+      color: #425057 !important;
+    }
+    .scanner-mini-metric,
+    .active-metric,
+    .underlying-strip {
+      background: rgba(238, 233, 220, 0.72) !important;
+      border-color: rgba(114, 106, 88, 0.58) !important;
+    }
+    .active-metric .label {
+      color: #4f5b60 !important;
+    }
+    .active-metric .value {
+      color: #102026 !important;
+    }
+    input,
+    select,
+    textarea,
+    .scan-table tbody td {
+      background: #eee8dc !important;
+      color: var(--ink) !important;
+      border-color: #8f8775 !important;
+    }
+    .scan-table th {
+      background: #bfb7a4 !important;
+      color: #15252b !important;
+      border-color: #8f8775 !important;
+    }
+    pre,
+    #logTail {
+      background: #223139 !important;
+      color: #e9efe9 !important;
+      border-color: #627071 !important;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03) !important;
+    }
+    .token-panel,
+    .cloud-paper-panel {
+      background:
+        radial-gradient(640px 260px at 8% 0%, rgba(11, 111, 104, 0.18), transparent 62%),
+        linear-gradient(135deg, rgba(230, 224, 208, 0.98), rgba(199, 191, 171, 0.98)) !important;
+      border-color: #938a75 !important;
+    }
+    .chip {
+      background: #cdddcf !important;
+      border-color: #88aa91 !important;
+      color: #14352f !important;
+    }
+    .chip.golden {
+      background: #e1cb91 !important;
+      border-color: #b88d31 !important;
+      color: #4d3208 !important;
+    }
+    .status-pill,
+    .market-pill,
+    .broker-pill,
+    .cloud-badge,
+    .strategy-score,
+    .scanner-status-pill {
+      box-shadow: 0 6px 14px rgba(39, 48, 50, 0.12) !important;
+    }
+    .start,
+    .token-submit,
+    .cloud-toggle.enabled {
+      background: #0b6f68 !important;
+      color: #f6fffc !important;
+    }
+    .refresh {
+      background: #a15d16 !important;
+      color: #fff8ec !important;
+    }
+    .stop,
+    .trade-button.exit {
+      background: #a92727 !important;
+      color: #fff6f3 !important;
+    }
+    .session,
+    .token-close {
+      background: #59666a !important;
+      color: #f5f1e8 !important;
+    }
+    .trade-button,
+    .scan-add,
+    .log-toggle,
+    .cloud-toggle.disabled {
+      background: #c8c0ad !important;
+      color: #17252b !important;
+      border: 1px solid #918875 !important;
+    }
+    .scan-empty,
+    .scan-summary {
+      color: #223138 !important;
+    }
   </style>
 </head>
 <body>

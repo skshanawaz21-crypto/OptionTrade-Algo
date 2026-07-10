@@ -80,6 +80,7 @@ Status legend:
 | T57 | Generate local OptionTrader Cloudflare tunnel config | DONE | T56 | Created `%USERPROFILE%\.cloudflared\optiontrader.yml` for the existing Cloudflare tunnel/hostname to route to OptionTrader port `8877`, leaving the original AlgoTrader config on port `8765` unchanged |
 | T58 | Add database-backed paper foundation | DONE | T57 | Added SQLite-backed users, paper accounts, strategy definitions/settings, paper state mirroring, normalized open/closed paper trade tables, strategy toggle enforcement, migration tooling, central quote cache table, dashboard APIs, and regression tests |
 | T59 | Add session-aware cloud paper UI and privacy split | DONE | T58 | Cloudflare Access email now creates/routes to separate DB paper users/accounts, viewer sessions no longer receive owner trade history/logs or owner-only controls, and the dashboard has a Cloud Paper Control panel with per-account strategy toggles |
+| T60 | Apply balanced mid-tone dashboard theme | DONE | T59 | Replaced the bright-light/dark extremes with a warm-slate control-room theme using muted stone backgrounds, parchment panels, readable dark-slate text, and preserved status colors without changing engine or API behavior |
 
 ## Change Log
 
@@ -139,6 +140,7 @@ Status legend:
 | 2026-07-09 | T57 completed: generated the local OptionTrader-specific Cloudflare tunnel config under the Windows user profile and validated that it routes the existing hostname to `http://127.0.0.1:8877` without changing the original AlgoTrader tunnel config. |
 | 2026-07-09 | T58 completed: added the database-backed paper foundation with default local user/account, JSON-to-DB mirroring/migration, per-account strategy settings honored by the engine, central quote cache storage, dashboard APIs, and DB runbook/tests. |
 | 2026-07-09 | T59 completed: added Cloudflare Access/request identity routing for DB-backed paper accounts, protected owner trade/log/control surfaces from viewer sessions, added per-account strategy toggle UI, and documented the remaining per-user worker layer. |
+| 2026-07-10 | T60 completed: applied a balanced warm-slate dashboard theme between light and dark mode while preserving all dashboard data bindings, controls, and trading behavior. |
 
 ## Working Rules
 
